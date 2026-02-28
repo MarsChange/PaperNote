@@ -1,0 +1,1 @@
+# PaperNote Backend - Core Configuration

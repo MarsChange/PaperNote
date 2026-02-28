@@ -1,0 +1,29 @@
+# Core
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+python-multipart==0.0.20
+pydantic==2.10.4
+pydantic-settings==2.7.1
+
+# AI / LangChain
+langchain==0.3.14
+langchain-core==0.3.29
+langchain-openai==0.3.0
+langchain-community==0.3.14
+langgraph==0.2.60
+
+# Embedding & Vector Store
+chromadb==0.5.23
+openai==1.58.1
+
+# Database
+aiosqlite==0.20.0
+
+# SSE
+sse-starlette==2.2.1
+
+# HTTP client (for MinerU API)
+httpx==0.28.1
+
+# PDF fallback (when MinerU unavailable)
+PyMuPDF==1.25.1

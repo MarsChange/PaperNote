@@ -1,0 +1,8 @@
+[project]
+name = "papernote-backend"
+version = "0.1.0"
+description = "PaperNote - AI Paper Reading Assistant Backend"
+requires-python = ">=3.10"
+
+[tool.setuptools]
+packages = ["app"]
