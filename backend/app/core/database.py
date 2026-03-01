@@ -36,8 +36,21 @@ CREATE TABLE IF NOT EXISTS messages (
     FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS annotations (
+    id TEXT PRIMARY KEY,
+    paper_id TEXT NOT NULL,
+    page_number INTEGER NOT NULL,
+    text_content TEXT NOT NULL,
+    color TEXT NOT NULL DEFAULT '#fef08a',
+    start_offset INTEGER,
+    end_offset INTEGER,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (paper_id) REFERENCES papers(id) ON DELETE CASCADE
+);
+
 CREATE INDEX IF NOT EXISTS idx_conversations_paper ON conversations(paper_id);
 CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id);
+CREATE INDEX IF NOT EXISTS idx_annotations_paper ON annotations(paper_id);
 """
 
 
@@ -51,7 +64,7 @@ async def get_db() -> aiosqlite.Connection:
 
 async def init_db():
     Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
-    db = await get_db()
+    db = await aiosqlite.connect(DB_PATH)
     try:
         await db.executescript(SCHEMA_SQL)
         await db.commit()

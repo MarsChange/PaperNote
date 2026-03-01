@@ -28,6 +28,10 @@ class SendMessageRequest(BaseModel):
     paper_id: str
 
 
+class UpdateTitleRequest(BaseModel):
+    title: str
+
+
 @router.post("/conversations")
 async def create_conversation(req: CreateConversationRequest):
     conv_id = str(uuid.uuid4())
@@ -46,6 +50,27 @@ async def create_conversation(req: CreateConversationRequest):
         await db.close()
 
     return {"id": conv_id, "paper_id": req.paper_id}
+
+
+@router.put("/papers/{paper_id}/conversations/{conversation_id}/title")
+async def update_conversation_title(paper_id: str, conversation_id: str, req: UpdateTitleRequest):
+    db = await get_db()
+    try:
+        cursor = await db.execute(
+            "SELECT id FROM conversations WHERE id = ? AND paper_id = ?",
+            (conversation_id, paper_id),
+        )
+        if not await cursor.fetchone():
+            raise HTTPException(status_code=404, detail="Conversation not found")
+
+        await db.execute(
+            "UPDATE conversations SET title = ? WHERE id = ?",
+            (req.title, conversation_id),
+        )
+        await db.commit()
+        return {"id": conversation_id, "title": req.title}
+    finally:
+        await db.close()
 
 
 @router.get("/conversations/{conversation_id}/messages")
@@ -158,7 +183,7 @@ async def chat_stream(req: SendMessageRequest, request: Request):
             logger.error(f"Stream error: {e}")
             yield {
                 "event": "error",
-                "data": json.dumps({"error": str(e)}),
+                "data": json.dumps({"error": "An internal error occurred"}),
             }
 
     return EventSourceResponse(event_generator())

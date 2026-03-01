@@ -5,7 +5,6 @@ import re
 from typing import Optional
 
 import chromadb
-from chromadb.config import Settings as ChromaSettings
 import openai
 
 from app.core.config import settings
@@ -23,21 +22,16 @@ class VectorStore:
     @property
     def client(self) -> chromadb.ClientAPI:
         if self._client is None:
-            self._client = chromadb.Client(
-                ChromaSettings(
-                    chroma_db_impl="duckdb+parquet",
-                    persist_directory=str(settings.chroma_dir),
-                    anonymized_telemetry=False,
-                )
-            )
+            path = str(settings.chroma_dir)
+            self._client = chromadb.PersistentClient(path=path)
         return self._client
 
     @property
     def openai_client(self) -> openai.OpenAI:
         if self._openai is None:
             self._openai = openai.OpenAI(
-                api_key=settings.embedding_api_key,
-                base_url=settings.embedding_base_url,
+                api_key=settings.qwen_api_key,
+                base_url=settings.qwen_base_url,
             )
         return self._openai
 
@@ -96,10 +90,11 @@ class VectorStore:
         if not texts:
             return []
 
-        # Batch in groups of 100
+        # DashScope text-embedding-v4 limits batch size to 10
+        batch_size = 6
         all_embeddings = []
-        for i in range(0, len(texts), 100):
-            batch = texts[i:i + 100]
+        for i in range(0, len(texts), batch_size):
+            batch = texts[i:i + batch_size]
             resp = self.openai_client.embeddings.create(
                 model=settings.embedding_model,
                 input=batch,

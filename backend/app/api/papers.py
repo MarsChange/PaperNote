@@ -5,6 +5,7 @@ import shutil
 from pathlib import Path
 
 from fastapi import APIRouter, UploadFile, File, BackgroundTasks, HTTPException
+from fastapi.responses import FileResponse
 
 from app.core.config import settings
 from app.core.database import get_db
@@ -76,7 +77,8 @@ async def upload_paper(background_tasks: BackgroundTasks, file: UploadFile = Fil
     # Save file
     paper_dir = Path(settings.upload_dir) / paper_id
     paper_dir.mkdir(parents=True, exist_ok=True)
-    filepath = paper_dir / file.filename
+    safe_filename = Path(file.filename).name
+    filepath = paper_dir / safe_filename
     with open(filepath, "wb") as f:
         shutil.copyfileobj(file.file, f)
 
@@ -85,7 +87,7 @@ async def upload_paper(background_tasks: BackgroundTasks, file: UploadFile = Fil
     try:
         await db.execute(
             "INSERT INTO papers (id, filename, filepath, status) VALUES (?, ?, ?, 'uploading')",
-            (paper_id, file.filename, str(filepath)),
+            (paper_id, safe_filename, str(filepath)),
         )
         await db.commit()
     finally:
@@ -94,7 +96,19 @@ async def upload_paper(background_tasks: BackgroundTasks, file: UploadFile = Fil
     # Kick off background processing
     background_tasks.add_task(_process_paper, paper_id, str(filepath))
 
-    return {"id": paper_id, "filename": file.filename, "status": "uploading"}
+    return {"id": paper_id, "filename": safe_filename, "status": "uploading"}
+
+@router.get("/papers")
+async def list_papers():
+    db = await get_db()
+    try:
+        cursor = await db.execute(
+            "SELECT id, filename, status, created_at FROM papers ORDER BY created_at DESC"
+        )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        await db.close()
 
 
 @router.get("/papers/{paper_id}")
@@ -105,7 +119,65 @@ async def get_paper(paper_id: str):
         row = await cursor.fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="Paper not found")
-        return dict(row)
+        paper = dict(row)
+
+        cursor = await db.execute(
+            "SELECT id, title, created_at FROM conversations WHERE paper_id = ? ORDER BY created_at DESC",
+            (paper_id,),
+        )
+        conversations = await cursor.fetchall()
+        paper["conversations"] = [dict(c) for c in conversations]
+        return paper
+    finally:
+        await db.close()
+
+
+@router.get("/papers/{paper_id}/pdf")
+async def get_paper_pdf(paper_id: str):
+    """Serve the original uploaded PDF file."""
+    db = await get_db()
+    try:
+        cursor = await db.execute("SELECT filepath, filename FROM papers WHERE id = ?", (paper_id,))
+        row = await cursor.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Paper not found")
+
+        filepath = Path(row["filepath"])
+        if not filepath.exists():
+            raise HTTPException(status_code=404, detail="PDF file not found on disk")
+
+        return FileResponse(
+            path=str(filepath),
+            media_type="application/pdf",
+            filename=row["filename"],
+        )
+    finally:
+        await db.close()
+
+
+@router.delete("/papers/{paper_id}")
+async def delete_paper(paper_id: str):
+    db = await get_db()
+    try:
+        cursor = await db.execute("SELECT id, filepath FROM papers WHERE id = ?", (paper_id,))
+        row = await cursor.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Paper not found")
+
+        # Cascade deletes handle conversations, messages, and annotations via FK
+        await db.execute("DELETE FROM papers WHERE id = ?", (paper_id,))
+        await db.commit()
+
+        # Remove vectors
+        vector_store.delete_paper(paper_id)
+
+        # Remove uploaded files
+        filepath = row["filepath"]
+        paper_dir = Path(filepath).parent
+        if paper_dir.exists():
+            shutil.rmtree(paper_dir)
+
+        return {"detail": "Paper deleted"}
     finally:
         await db.close()
 
