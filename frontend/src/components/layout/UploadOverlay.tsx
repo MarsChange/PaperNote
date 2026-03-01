@@ -3,9 +3,10 @@ import { useCallback, useState } from 'react'
 interface UploadOverlayProps {
   onFileSelect: (file: File) => void
   onOpenSettings: () => void
+  onOpenHistory: () => void
 }
 
-export default function UploadOverlay({ onFileSelect, onOpenSettings }: UploadOverlayProps) {
+export default function UploadOverlay({ onFileSelect, onOpenSettings, onOpenHistory }: UploadOverlayProps) {
   const [isDragging, setIsDragging] = useState(false)
 
   const handleFile = useCallback((file: File) => {
@@ -28,16 +29,36 @@ export default function UploadOverlay({ onFileSelect, onOpenSettings }: UploadOv
       onDragLeave={() => setIsDragging(false)}
       onDrop={handleDrop}
     >
-      {/* Settings button */}
-      <button
-        onClick={onOpenSettings}
-        className="absolute top-4 right-4 text-text-tertiary hover:text-text-secondary p-2 rounded-lg hover:bg-surface-tertiary transition-colors"
-        title="Settings"
-      >
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <circle cx="12" cy="12" r="3"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>
-        </svg>
-      </button>
+      {/* Top-left history button */}
+      <div className="absolute top-4 left-4">
+        <button
+          onClick={onOpenHistory}
+          className="group relative flex items-center gap-1.5 px-3 py-1.5 text-sm text-text-secondary rounded-lg border border-border bg-surface hover:bg-surface-secondary shadow-sm hover:shadow transition-all"
+        >
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M3 12h18M3 6h18M3 18h18" />
+          </svg>
+          Papers
+          <span className="pointer-events-none absolute -bottom-8 left-1/2 -translate-x-1/2 whitespace-nowrap rounded bg-text-primary px-2 py-0.5 text-xs text-surface opacity-0 group-hover:opacity-100 transition-opacity">
+            Browse paper history
+          </span>
+        </button>
+      </div>
+
+      {/* Top-right settings button */}
+      <div className="absolute top-4 right-4">
+        <button
+          onClick={onOpenSettings}
+          className="group relative text-text-tertiary hover:text-text-secondary p-2 rounded-lg hover:bg-surface-tertiary transition-colors"
+        >
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="12" cy="12" r="3"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>
+          </svg>
+          <span className="pointer-events-none absolute -bottom-8 left-1/2 -translate-x-1/2 whitespace-nowrap rounded bg-text-primary px-2 py-0.5 text-xs text-surface opacity-0 group-hover:opacity-100 transition-opacity">
+            Settings
+          </span>
+        </button>
+      </div>
 
       <div className="flex flex-col items-center gap-6 max-w-md px-8">
         {/* Logo */}

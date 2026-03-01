@@ -4,15 +4,19 @@ import PDFViewer from './components/pdf/PDFViewer'
 import ChatSidebar from './components/chat/ChatSidebar'
 import UploadOverlay from './components/layout/UploadOverlay'
 import SettingsModal from './components/settings/SettingsModal'
-import { uploadPaper, getPaperStatus, createConversation, streamChat } from './api'
-import type { PaperFile, ChatMessage } from './types'
+import HistorySidebar from './components/layout/HistorySidebar'
+import { uploadPaper, getPaperStatus, createConversation, streamChat, fetchAnnotations, createAnnotation, deleteAnnotation } from './api'
+import type { PaperFile, ChatMessage, Annotation } from './types'
 
 function App() {
   const [file, setFile] = useState<PaperFile | null>(null)
   const [pdfUrl, setPdfUrl] = useState<string | null>(null)
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [showSettings, setShowSettings] = useState(false)
+  const [showHistory, setShowHistory] = useState(false)
   const [isStreaming, setIsStreaming] = useState(false)
+  const [annotations, setAnnotations] = useState<Annotation[]>([])
+  const [scrollToPage, setScrollToPage] = useState(0)
   const conversationIdRef = useRef<string | null>(null)
   const abortRef = useRef<AbortController | null>(null)
 
@@ -87,23 +91,13 @@ function App() {
   const handleSendMessage = useCallback((content: string) => {
     if (!file || !conversationIdRef.current || isStreaming) return
 
-    // Add user message
-    const userMsg: ChatMessage = {
-      id: crypto.randomUUID(),
-      role: 'user',
-      content,
-      timestamp: Date.now(),
-    }
-    setMessages(prev => [...prev, userMsg])
-
-    // Create placeholder for assistant response
+    // Add user message + assistant placeholder atomically
     const assistantMsgId = crypto.randomUUID()
-    setMessages(prev => [...prev, {
-      id: assistantMsgId,
-      role: 'assistant',
-      content: '',
-      timestamp: Date.now(),
-    }])
+    setMessages(prev => [
+      ...prev,
+      { id: crypto.randomUUID(), role: 'user' as const, content, timestamp: Date.now() },
+      { id: assistantMsgId, role: 'assistant' as const, content: '', timestamp: Date.now() },
+    ])
     setIsStreaming(true)
 
     // Stream response
@@ -138,12 +132,140 @@ function App() {
     )
   }, [file, isStreaming])
 
+  const handleQuickAction = useCallback((label: string, prompt: string) => {
+    if (!file || !conversationIdRef.current || isStreaming) return
+
+    // Show label as user message + create assistant placeholder atomically
+    const assistantMsgId = crypto.randomUUID()
+    setMessages(prev => [
+      ...prev,
+      { id: crypto.randomUUID(), role: 'user' as const, content: label, timestamp: Date.now() },
+      { id: assistantMsgId, role: 'assistant' as const, content: '', timestamp: Date.now() },
+    ])
+    setIsStreaming(true)
+
+    // Stream with prompt (not label)
+    abortRef.current = streamChat(
+      conversationIdRef.current!,
+      file.id,
+      prompt,
+      {
+        onToken: (token) => {
+          setMessages(prev =>
+            prev.map(m =>
+              m.id === assistantMsgId
+                ? { ...m, content: m.content + token }
+                : m
+            )
+          )
+        },
+        onDone: () => {
+          setIsStreaming(false)
+        },
+        onError: (error) => {
+          setMessages(prev =>
+            prev.map(m =>
+              m.id === assistantMsgId
+                ? { ...m, content: m.content || `Error: ${error}` }
+                : m
+            )
+          )
+          setIsStreaming(false)
+        },
+      },
+    )
+  }, [file, isStreaming])
+
+  const loadAnnotations = useCallback(async (paperId: string) => {
+    try {
+      const data = await fetchAnnotations(paperId)
+      setAnnotations(data)
+    } catch {
+      setAnnotations([])
+    }
+  }, [])
+
+  const handleDeleteAnnotation = useCallback(async (annotationId: string) => {
+    if (!file) return
+    try {
+      await deleteAnnotation(file.id, annotationId)
+      setAnnotations(prev => prev.filter(a => a.id !== annotationId))
+    } catch {
+      // silently fail
+    }
+  }, [file])
+
+  const handleCreateAnnotation = useCallback(async (color: string, text: string, pageNumber: number) => {
+    if (!file) return
+    const normalizedText = text.replace(/\s+/g, ' ').trim()
+    if (!normalizedText) return
+    try {
+      const ann = await createAnnotation(file.id, {
+        page_number: pageNumber,
+        text_content: normalizedText,
+        color,
+      })
+      setAnnotations(prev => [...prev, ann])
+    } catch (err) {
+      console.error('Failed to create annotation:', err)
+    }
+  }, [file])
+
+  const handleSelectPaper = useCallback(async (paper: { id: string; filename: string }) => {
+    const url = `/api/papers/${paper.id}/pdf`
+    setPdfUrl(url)
+    setFile({
+      id: paper.id,
+      name: paper.filename,
+      status: 'ready',
+      uploadedAt: Date.now(),
+    })
+    setMessages([])
+    conversationIdRef.current = null
+    setAnnotations([])
+
+    try {
+      const conv = await createConversation(paper.id)
+      conversationIdRef.current = conv.id
+      setMessages([{
+        id: crypto.randomUUID(),
+        role: 'assistant',
+        content: `Loaded **${paper.filename}**. Feel free to ask me any questions about this paper.`,
+        timestamp: Date.now(),
+      }])
+      loadAnnotations(paper.id)
+    } catch {
+      setMessages([{
+        id: crypto.randomUUID(),
+        role: 'assistant',
+        content: 'Failed to load conversation for this paper.',
+        timestamp: Date.now(),
+      }])
+    }
+  }, [loadAnnotations])
+
+  const handleNewPaper = useCallback(() => {
+    setFile(null)
+    setPdfUrl(null)
+    setMessages([])
+    setAnnotations([])
+    conversationIdRef.current = null
+    abortRef.current?.abort()
+    abortRef.current = null
+  }, [])
+
   if (!file || !pdfUrl) {
     return (
       <>
         <UploadOverlay
           onFileSelect={handleFileSelect}
           onOpenSettings={() => setShowSettings(true)}
+          onOpenHistory={() => setShowHistory(true)}
+        />
+        <HistorySidebar
+          open={showHistory}
+          onClose={() => setShowHistory(false)}
+          onSelectPaper={handleSelectPaper}
         />
         {showSettings && (
           <SettingsModal onClose={() => setShowSettings(false)} />
@@ -156,6 +278,29 @@ function App() {
     <div className="h-full w-full flex flex-col bg-surface">
       <header className="h-11 flex items-center justify-between px-4 border-b border-border-light bg-surface shrink-0">
         <div className="flex items-center gap-2 min-w-0">
+          <button
+            onClick={() => setShowHistory(true)}
+            className="group relative text-text-tertiary hover:text-text-secondary p-1 rounded hover:bg-surface-tertiary transition-colors shrink-0"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M3 12h18M3 6h18M3 18h18" />
+            </svg>
+            <span className="pointer-events-none absolute top-full left-1/2 -translate-x-1/2 mt-1 whitespace-nowrap rounded bg-text-primary px-2 py-0.5 text-xs text-surface opacity-0 group-hover:opacity-100 transition-opacity z-10">
+              Papers
+            </span>
+          </button>
+          <button
+            onClick={handleNewPaper}
+            className="group relative flex items-center gap-1 px-2 py-0.5 text-xs text-text-secondary rounded-md border border-border bg-surface hover:bg-surface-secondary shadow-sm hover:shadow transition-all shrink-0"
+          >
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
+            </svg>
+            New
+            <span className="pointer-events-none absolute top-full left-1/2 -translate-x-1/2 mt-1 whitespace-nowrap rounded bg-text-primary px-2 py-0.5 text-xs text-surface opacity-0 group-hover:opacity-100 transition-opacity z-10">
+              Upload new paper
+            </span>
+          </button>
           <span className="text-sm font-medium text-text-primary truncate">
             {file.name}
           </span>
@@ -165,21 +310,30 @@ function App() {
             </span>
           )}
         </div>
-        <button
-          onClick={() => setShowSettings(true)}
-          className="text-text-tertiary hover:text-text-secondary p-1 rounded hover:bg-surface-tertiary transition-colors"
-          title="Settings"
-        >
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <circle cx="12" cy="12" r="3"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>
-          </svg>
-        </button>
+        <div className="flex items-center gap-1">
+          <button
+            onClick={() => setShowSettings(true)}
+            className="group relative text-text-tertiary hover:text-text-secondary p-1 rounded hover:bg-surface-tertiary transition-colors"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="12" cy="12" r="3"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>
+            </svg>
+            <span className="pointer-events-none absolute top-full right-0 mt-1 whitespace-nowrap rounded bg-text-primary px-2 py-0.5 text-xs text-surface opacity-0 group-hover:opacity-100 transition-opacity z-10">
+              Settings
+            </span>
+          </button>
+        </div>
       </header>
 
       <div className="flex-1 min-h-0">
         <PanelGroup direction="horizontal">
           <Panel defaultSize={65} minSize={40}>
-            <PDFViewer url={pdfUrl} />
+            <PDFViewer
+              url={pdfUrl}
+              annotations={annotations}
+              onAnnotation={handleCreateAnnotation}
+              scrollToPage={scrollToPage}
+            />
           </Panel>
           <PanelResizeHandle className="w-px bg-border-light hover:bg-accent transition-colors data-[resize-handle-active]:bg-accent" />
           <Panel defaultSize={35} minSize={25}>
@@ -187,11 +341,22 @@ function App() {
               file={file}
               messages={messages}
               onSendMessage={handleSendMessage}
+              onQuickAction={handleQuickAction}
               isStreaming={isStreaming}
+              annotations={annotations}
+              onDeleteAnnotation={handleDeleteAnnotation}
+              onGoToPage={(page: number) => setScrollToPage(page)}
             />
           </Panel>
         </PanelGroup>
       </div>
+
+      <HistorySidebar
+        open={showHistory}
+        onClose={() => setShowHistory(false)}
+        onSelectPaper={handleSelectPaper}
+        currentPaperId={file.id}
+      />
 
       {showSettings && (
         <SettingsModal onClose={() => setShowSettings(false)} />

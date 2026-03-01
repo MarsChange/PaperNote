@@ -27,3 +27,14 @@ export interface AppSettings {
   apiKey: string
   baseUrl: string
 }
+
+export interface Annotation {
+  id: string
+  paper_id: string
+  page_number: number
+  text_content: string
+  color: string
+  start_offset?: number
+  end_offset?: number
+  created_at?: string
+}

@@ -1,17 +1,173 @@
-import { useState } from 'react'
+import { useState, useCallback, useRef, useEffect } from 'react'
 import { Document, Page, pdfjs } from 'react-pdf'
 import 'react-pdf/dist/Page/AnnotationLayer.css'
 import 'react-pdf/dist/Page/TextLayer.css'
+import AnnotationPopover from './AnnotationPopover'
+import type { Annotation } from '../../types'
 
 pdfjs.GlobalWorkerOptions.workerSrc = `//unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`
 
-interface PDFViewerProps {
-  url: string
+// Normalize whitespace: collapse runs of whitespace (including newlines) into single spaces, then trim
+function normalizeText(text: string): string {
+  return text.replace(/\s+/g, ' ').trim()
 }
 
-export default function PDFViewer({ url }: PDFViewerProps) {
+interface PDFViewerProps {
+  url: string
+  annotations?: Annotation[]
+  onAnnotation?: (color: string, text: string, pageNumber: number) => void
+  scrollToPage?: number
+}
+
+export default function PDFViewer({ url, annotations = [], onAnnotation, scrollToPage }: PDFViewerProps) {
   const [numPages, setNumPages] = useState<number>(0)
   const [scale, setScale] = useState(1.2)
+  const [popover, setPopover] = useState<{
+    x: number
+    y: number
+    text: string
+    pageNumber: number
+  } | null>(null)
+  const containerRef = useRef<HTMLDivElement>(null)
+  const pageRefs = useRef<Map<number, HTMLDivElement>>(new Map())
+  const renderedPages = useRef<Set<number>>(new Set())
+
+  // Apply annotation highlights to rendered PDF text layer spans
+  const applyHighlights = useCallback((pageNumber: number) => {
+    const pageEl = pageRefs.current.get(pageNumber)
+    if (!pageEl) return
+
+    const textLayer = pageEl.querySelector('.react-pdf__Page__textContent')
+    if (!textLayer) return
+
+    const spans = textLayer.querySelectorAll('span')
+    const pageAnnotations = annotations.filter(a => a.page_number === pageNumber)
+
+    // Clear previous highlights
+    spans.forEach(span => {
+      span.style.backgroundColor = ''
+    })
+
+    if (pageAnnotations.length === 0) return
+
+    // Build a map of each span's character range within the normalized concatenated page text
+    const spanRanges: Array<{ span: HTMLSpanElement; start: number; end: number }> = []
+    let offset = 0
+    spans.forEach(span => {
+      const text = span.textContent || ''
+      if (text) {
+        const normalized = normalizeText(text)
+        if (normalized) {
+          spanRanges.push({ span, start: offset, end: offset + normalized.length })
+          offset += normalized.length + 1 // +1 for space separator between spans
+        }
+      }
+    })
+    const fullText = spanRanges.map(r => normalizeText(r.span.textContent || '')).join(' ')
+
+    // Apply highlights for each annotation
+    for (const ann of pageAnnotations) {
+      const searchText = normalizeText(ann.text_content)
+      if (!searchText) continue
+
+      // Convert hex color to rgba with 0.3 opacity
+      const hex = ann.color.replace('#', '')
+      const r = parseInt(hex.substring(0, 2), 16)
+      const g = parseInt(hex.substring(2, 4), 16)
+      const b = parseInt(hex.substring(4, 6), 16)
+      const bgColor = `rgba(${r}, ${g}, ${b}, 0.3)`
+
+      // Find first exact occurrence of the annotation text in the concatenated page text
+      const matchIdx = fullText.indexOf(searchText)
+      if (matchIdx === -1) continue
+      const matchEnd = matchIdx + searchText.length
+
+      // Highlight only the spans that overlap with this exact match range
+      for (const { span, start, end } of spanRanges) {
+        if (end > matchIdx && start < matchEnd) {
+          span.style.backgroundColor = bgColor
+        }
+      }
+    }
+  }, [annotations])
+
+  // Re-apply highlights when annotations change
+  useEffect(() => {
+    renderedPages.current.forEach(pageNum => {
+      applyHighlights(pageNum)
+    })
+  }, [annotations, applyHighlights])
+
+  const handlePageRenderSuccess = useCallback((pageNumber: number) => {
+    renderedPages.current.add(pageNumber)
+    applyHighlights(pageNumber)
+  }, [applyHighlights])
+
+  // Detect text selection inside PDF pages
+  const handleMouseUp = useCallback(() => {
+    const selection = window.getSelection()
+    if (!selection || selection.isCollapsed || !selection.toString().trim()) {
+      return
+    }
+
+    const text = normalizeText(selection.toString())
+    if (!text) return
+
+    // Find which page the selection is in
+    const anchorNode = selection.anchorNode
+    if (!anchorNode) return
+
+    let pageElement: HTMLElement | null = anchorNode instanceof HTMLElement
+      ? anchorNode
+      : anchorNode.parentElement
+    let pageNumber = 0
+
+    while (pageElement) {
+      const dataPage = pageElement.getAttribute('data-page-number')
+      if (dataPage) {
+        pageNumber = parseInt(dataPage, 10)
+        break
+      }
+      pageElement = pageElement.parentElement
+    }
+
+    if (pageNumber === 0) return
+
+    // Get position for popover
+    const range = selection.getRangeAt(0)
+    const rect = range.getBoundingClientRect()
+
+    setPopover({
+      x: rect.left + rect.width / 2 - 75,
+      y: rect.top - 45,
+      text,
+      pageNumber,
+    })
+  }, [])
+
+  const handleHighlight = useCallback((color: string, text: string, pageNumber: number) => {
+    onAnnotation?.(color, text, pageNumber)
+    setPopover(null)
+    window.getSelection()?.removeAllRanges()
+  }, [onAnnotation])
+
+  const dismissPopover = useCallback(() => {
+    setPopover(null)
+  }, [])
+
+  // Scroll to a specific page
+  const scrollTo = useCallback((page: number) => {
+    const el = pageRefs.current.get(page)
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    }
+  }, [])
+
+  // Handle scrollToPage prop changes
+  if (scrollToPage && scrollToPage > 0) {
+    // Use requestAnimationFrame to avoid calling during render
+    requestAnimationFrame(() => scrollTo(scrollToPage))
+  }
 
   return (
     <div className="h-full flex flex-col bg-surface-secondary">
@@ -39,7 +195,11 @@ export default function PDFViewer({ url }: PDFViewerProps) {
       </div>
 
       {/* PDF content */}
-      <div className="flex-1 overflow-auto flex justify-center py-4">
+      <div
+        ref={containerRef}
+        className="flex-1 overflow-auto flex justify-center py-4"
+        onMouseUp={handleMouseUp}
+      >
         <Document
           file={url}
           onLoadSuccess={({ numPages: n }) => setNumPages(n)}
@@ -56,18 +216,37 @@ export default function PDFViewer({ url }: PDFViewerProps) {
         >
           <div className="flex flex-col items-center gap-4">
             {Array.from({ length: numPages }, (_, i) => (
-              <Page
+              <div
                 key={i + 1}
-                pageNumber={i + 1}
-                scale={scale}
-                className="shadow-sm"
-                renderTextLayer={true}
-                renderAnnotationLayer={true}
-              />
+                ref={(el) => {
+                  if (el) pageRefs.current.set(i + 1, el)
+                }}
+              >
+                <Page
+                  pageNumber={i + 1}
+                  scale={scale}
+                  className="shadow-sm"
+                  renderTextLayer={true}
+                  renderAnnotationLayer={true}
+                  onRenderSuccess={() => handlePageRenderSuccess(i + 1)}
+                />
+              </div>
             ))}
           </div>
         </Document>
       </div>
+
+      {/* Annotation color popover */}
+      {popover && (
+        <AnnotationPopover
+          x={popover.x}
+          y={popover.y}
+          selectedText={popover.text}
+          pageNumber={popover.pageNumber}
+          onHighlight={handleHighlight}
+          onDismiss={dismissPopover}
+        />
+      )}
     </div>
   )
 }

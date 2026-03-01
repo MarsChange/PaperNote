@@ -103,6 +103,43 @@ export function streamChat(
   return controller
 }
 
+export async function fetchPapers() {
+  const res = await fetch(`${API_BASE}/papers`)
+  if (!res.ok) throw new Error('Failed to fetch papers')
+  return res.json()
+}
+
+export async function deletePaper(paperId: string) {
+  const res = await fetch(`${API_BASE}/papers/${paperId}`, { method: 'DELETE' })
+  if (!res.ok) throw new Error('Failed to delete paper')
+}
+
+export async function fetchAnnotations(paperId: string) {
+  const res = await fetch(`${API_BASE}/papers/${paperId}/annotations`)
+  if (!res.ok) throw new Error('Failed to fetch annotations')
+  return res.json()
+}
+
+export async function createAnnotation(paperId: string, data: {
+  page_number: number; text_content: string; color: string;
+  start_offset?: number; end_offset?: number;
+}) {
+  const res = await fetch(`${API_BASE}/papers/${paperId}/annotations`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  })
+  if (!res.ok) throw new Error('Failed to create annotation')
+  return res.json()
+}
+
+export async function deleteAnnotation(paperId: string, annotationId: string) {
+  const res = await fetch(`${API_BASE}/papers/${paperId}/annotations/${annotationId}`, {
+    method: 'DELETE',
+  })
+  if (!res.ok) throw new Error('Failed to delete annotation')
+}
+
 export async function getProviders(): Promise<{ providers: Array<{ id: string; name: string; default_base_url: string; models: string[] }> }> {
   const res = await fetch(`${API_BASE}/settings/providers`)
   if (!res.ok) throw new Error('Failed to get providers')
