@@ -150,8 +150,11 @@ async def chat_stream(req: SendMessageRequest, request: Request):
                     if route:
                         yield {"event": "route", "data": json.dumps({"route": route})}
 
-                # Token streaming from LLM
+                # Token streaming from LLM — only from answer nodes, NOT from router
                 if kind == "on_chat_model_stream":
+                    node = event.get("metadata", {}).get("langgraph_node", "")
+                    if node not in ("answer_rag", "answer_chat", "answer_summarize"):
+                        continue
                     chunk = event.get("data", {}).get("chunk")
                     if chunk and hasattr(chunk, "content") and chunk.content:
                         full_answer += chunk.content

@@ -109,6 +109,22 @@ export async function fetchPapers() {
   return res.json()
 }
 
+export async function fetchPaperDetail(paperId: string): Promise<{
+  id: string; filename: string; status: string; conversations: Array<{ id: string; title?: string; created_at: string }>
+}> {
+  const res = await fetch(`${API_BASE}/papers/${paperId}`)
+  if (!res.ok) throw new Error('Failed to fetch paper detail')
+  return res.json()
+}
+
+export async function fetchMessages(conversationId: string): Promise<Array<{
+  id: string; role: string; content: string; created_at: string
+}>> {
+  const res = await fetch(`${API_BASE}/conversations/${conversationId}/messages`)
+  if (!res.ok) throw new Error('Failed to fetch messages')
+  return res.json()
+}
+
 export async function deletePaper(paperId: string) {
   const res = await fetch(`${API_BASE}/papers/${paperId}`, { method: 'DELETE' })
   if (!res.ok) throw new Error('Failed to delete paper')

@@ -50,25 +50,31 @@ export default function PDFViewer({ url, annotations = [], onAnnotation, scrollT
 
     if (pageAnnotations.length === 0) return
 
-    // Build a map of each span's character range within the normalized concatenated page text
+    // Build raw span ranges — concatenate without separator to preserve exact character positions
     const spanRanges: Array<{ span: HTMLSpanElement; start: number; end: number }> = []
     let offset = 0
     spans.forEach(span => {
       const text = span.textContent || ''
-      if (text) {
-        const normalized = normalizeText(text)
-        if (normalized) {
-          spanRanges.push({ span, start: offset, end: offset + normalized.length })
-          offset += normalized.length + 1 // +1 for space separator between spans
-        }
+      if (text.length > 0) {
+        spanRanges.push({ span, start: offset, end: offset + text.length })
+        offset += text.length
       }
     })
-    const fullText = spanRanges.map(r => normalizeText(r.span.textContent || '')).join(' ')
+    const fullText = spanRanges.map(r => r.span.textContent || '').join('')
+
+    // Build whitespace-stripped version + mapping back to raw positions
+    const strippedChars: number[] = [] // strippedChars[strippedIdx] = rawIdx
+    for (let i = 0; i < fullText.length; i++) {
+      if (!/\s/.test(fullText[i])) {
+        strippedChars.push(i)
+      }
+    }
+    const fullStripped = strippedChars.map(i => fullText[i]).join('')
 
     // Apply highlights for each annotation
     for (const ann of pageAnnotations) {
-      const searchText = normalizeText(ann.text_content)
-      if (!searchText) continue
+      const searchStripped = ann.text_content.replace(/\s/g, '')
+      if (!searchStripped) continue
 
       // Convert hex color to rgba with 0.3 opacity
       const hex = ann.color.replace('#', '')
@@ -77,14 +83,19 @@ export default function PDFViewer({ url, annotations = [], onAnnotation, scrollT
       const b = parseInt(hex.substring(4, 6), 16)
       const bgColor = `rgba(${r}, ${g}, ${b}, 0.3)`
 
-      // Find first exact occurrence of the annotation text in the concatenated page text
-      const matchIdx = fullText.indexOf(searchText)
-      if (matchIdx === -1) continue
-      const matchEnd = matchIdx + searchText.length
+      // Find match in stripped text, then map back to raw positions
+      const strippedIdx = fullStripped.indexOf(searchStripped)
+      if (strippedIdx === -1) continue
+      const strippedEnd = strippedIdx + searchStripped.length
+
+      const rawStart = strippedChars[strippedIdx]
+      const rawEnd = strippedEnd < strippedChars.length
+        ? strippedChars[strippedEnd]
+        : fullText.length
 
       // Highlight only the spans that overlap with this exact match range
       for (const { span, start, end } of spanRanges) {
-        if (end > matchIdx && start < matchEnd) {
+        if (end > rawStart && start < rawEnd) {
           span.style.backgroundColor = bgColor
         }
       }
@@ -153,6 +164,21 @@ export default function PDFViewer({ url, annotations = [], onAnnotation, scrollT
 
   const dismissPopover = useCallback(() => {
     setPopover(null)
+  }, [])
+
+  // Ctrl+scroll / pinch-to-zoom
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+    const handleWheel = (e: WheelEvent) => {
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault()
+        const delta = e.deltaY > 0 ? -0.05 : 0.05
+        setScale(s => Math.min(3, Math.max(0.5, s + delta)))
+      }
+    }
+    el.addEventListener('wheel', handleWheel, { passive: false })
+    return () => el.removeEventListener('wheel', handleWheel)
   }, [])
 
   // Scroll to a specific page

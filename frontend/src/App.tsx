@@ -5,7 +5,7 @@ import ChatSidebar from './components/chat/ChatSidebar'
 import UploadOverlay from './components/layout/UploadOverlay'
 import SettingsModal from './components/settings/SettingsModal'
 import HistorySidebar from './components/layout/HistorySidebar'
-import { uploadPaper, getPaperStatus, createConversation, streamChat, fetchAnnotations, createAnnotation, deleteAnnotation } from './api'
+import { uploadPaper, getPaperStatus, createConversation, streamChat, fetchAnnotations, createAnnotation, deleteAnnotation, fetchPaperDetail, fetchMessages } from './api'
 import type { PaperFile, ChatMessage, Annotation } from './types'
 
 function App() {
@@ -132,19 +132,18 @@ function App() {
     )
   }, [file, isStreaming])
 
-  const handleQuickAction = useCallback((label: string, prompt: string) => {
+  const handleQuickAction = useCallback((_label: string, prompt: string) => {
     if (!file || !conversationIdRef.current || isStreaming) return
 
-    // Show label as user message + create assistant placeholder atomically
+    // No user bubble for quick actions — just create assistant placeholder directly
     const assistantMsgId = crypto.randomUUID()
     setMessages(prev => [
       ...prev,
-      { id: crypto.randomUUID(), role: 'user' as const, content: label, timestamp: Date.now() },
       { id: assistantMsgId, role: 'assistant' as const, content: '', timestamp: Date.now() },
     ])
     setIsStreaming(true)
 
-    // Stream with prompt (not label)
+    // Stream with prompt
     abortRef.current = streamChat(
       conversationIdRef.current!,
       file.id,
@@ -225,14 +224,47 @@ function App() {
     setAnnotations([])
 
     try {
-      const conv = await createConversation(paper.id)
-      conversationIdRef.current = conv.id
-      setMessages([{
-        id: crypto.randomUUID(),
-        role: 'assistant',
-        content: `Loaded **${paper.filename}**. Feel free to ask me any questions about this paper.`,
-        timestamp: Date.now(),
-      }])
+      // Check for existing conversations
+      const detail = await fetchPaperDetail(paper.id)
+      const existingConversations = detail.conversations || []
+
+      let convId: string
+
+      if (existingConversations.length > 0) {
+        // Use the most recent conversation (already sorted DESC by backend)
+        convId = existingConversations[0].id
+        conversationIdRef.current = convId
+
+        // Load existing messages
+        const msgs = await fetchMessages(convId)
+        if (msgs.length > 0) {
+          setMessages(msgs.map(m => ({
+            id: m.id,
+            role: m.role as 'user' | 'assistant',
+            content: m.content,
+            timestamp: new Date(m.created_at).getTime(),
+          })))
+        } else {
+          setMessages([{
+            id: crypto.randomUUID(),
+            role: 'assistant',
+            content: `Loaded **${paper.filename}**. Feel free to ask me any questions about this paper.`,
+            timestamp: Date.now(),
+          }])
+        }
+      } else {
+        // No existing conversation — create a new one
+        const conv = await createConversation(paper.id)
+        convId = conv.id
+        conversationIdRef.current = convId
+        setMessages([{
+          id: crypto.randomUUID(),
+          role: 'assistant',
+          content: `Loaded **${paper.filename}**. Feel free to ask me any questions about this paper.`,
+          timestamp: Date.now(),
+        }])
+      }
+
       loadAnnotations(paper.id)
     } catch {
       setMessages([{
