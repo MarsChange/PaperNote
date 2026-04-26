@@ -29,6 +29,10 @@ function parseSources(metadataJson?: string): PaperSource[] {
   }
 }
 
+function fallbackTitleFromFilename(filename: string) {
+  return filename.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ').trim() || filename
+}
+
 function App() {
   const [file, setFile] = useState<PaperFile | null>(null)
   const [pdfUrl, setPdfUrl] = useState<string | null>(null)
@@ -60,12 +64,15 @@ function App() {
     }
   }, [])
 
-  const pollStatus = useCallback(async (paperId: string, filename: string) => {
+  const pollStatus = useCallback(async (paperId: string, fallbackName: string) => {
     const poll = async () => {
       try {
         const data = await getPaperStatus(paperId)
+        const displayName = data.title?.trim() || fallbackName
         setFile((prev) => prev ? {
           ...prev,
+          name: displayName,
+          filename: data.filename || prev.filename,
           status: data.status as PaperFile['status'],
           summary: data.summary,
           keywords: data.keywords || [],
@@ -81,7 +88,7 @@ function App() {
             {
               id: crypto.randomUUID(),
               role: 'assistant',
-              content: `**${filename}** 已完成解析。你现在可以询问方法细节、实验结果、图表含义，或者直接让系统总结全文。`,
+              content: `**${displayName}** 已完成解析。你现在可以询问方法细节、实验结果、图表含义，或者直接让系统总结全文。`,
               timestamp: Date.now(),
             },
           ])
@@ -118,7 +125,8 @@ function App() {
 
     setFile({
       id: crypto.randomUUID(),
-      name: selectedFile.name,
+      name: fallbackTitleFromFilename(selectedFile.name),
+      filename: selectedFile.name,
       status: 'uploading',
       uploadedAt: Date.now(),
     })
@@ -128,9 +136,11 @@ function App() {
       setFile((prev) => prev ? {
         ...prev,
         id: result.id,
+        name: result.title || prev.name,
+        filename: result.filename,
         status: 'parsing',
       } : null)
-      await pollStatus(result.id, selectedFile.name)
+      await pollStatus(result.id, result.title || fallbackTitleFromFilename(selectedFile.name))
     } catch {
       setFile((prev) => prev ? { ...prev, status: 'error' } : null)
       setMessages([
@@ -279,7 +289,7 @@ function App() {
     return translateSelection(file.id, text)
   }, [file])
 
-  const handleSelectPaper = useCallback(async (paper: { id: string; filename: string }) => {
+  const handleSelectPaper = useCallback(async (paper: { id: string; filename: string; title?: string }) => {
     setPdfUrl(`/api/papers/${paper.id}/pdf`)
     setAnnotations([])
     setMessages([])
@@ -289,7 +299,8 @@ function App() {
       const detail = await fetchPaperDetail(paper.id)
       setFile({
         id: paper.id,
-        name: detail.filename,
+        name: detail.title || paper.title || fallbackTitleFromFilename(detail.filename),
+        filename: detail.filename,
         status: detail.status as PaperFile['status'],
         summary: detail.summary,
         keywords: detail.keywords || [],
@@ -318,7 +329,7 @@ function App() {
             {
               id: crypto.randomUUID(),
               role: 'assistant',
-              content: `已载入 **${detail.filename}**。你可以继续追问，也可以跳到右侧让系统重新总结全文。`,
+              content: `已载入 **${detail.title || detail.filename}**。你可以继续追问，也可以跳到右侧让系统重新总结全文。`,
               timestamp: Date.now(),
             },
           ])
@@ -330,7 +341,7 @@ function App() {
           {
             id: crypto.randomUUID(),
             role: 'assistant',
-            content: `已载入 **${detail.filename}**。从任意问题开始即可。`,
+            content: `已载入 **${detail.title || detail.filename}**。从任意问题开始即可。`,
             timestamp: Date.now(),
           },
         ])
@@ -393,6 +404,11 @@ function App() {
             <h1 className="mt-3 truncate font-display text-2xl text-text-primary md:text-4xl">
               {file.name}
             </h1>
+            {file.filename && file.filename !== file.name && (
+              <p className="mt-1 truncate text-xs text-text-tertiary md:text-sm">
+                源文件：{file.filename}
+              </p>
+            )}
             {file.summary && (
               <p className="mt-3 max-w-4xl text-sm leading-7 text-text-secondary md:text-base">
                 {file.summary}

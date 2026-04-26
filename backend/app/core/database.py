@@ -9,6 +9,7 @@ SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS papers (
     id TEXT PRIMARY KEY,
     filename TEXT NOT NULL,
+    title TEXT,
     filepath TEXT NOT NULL,
     markdown_path TEXT,
     content_list_path TEXT,
@@ -81,6 +82,7 @@ async def init_db():
 async def _run_migrations(db: aiosqlite.Connection):
     table_columns = {
         "papers": {
+            "title": "TEXT",
             "content_list_path": "TEXT",
             "assets_dir": "TEXT",
             "metadata_json": "TEXT",
@@ -101,3 +103,7 @@ async def _run_migrations(db: aiosqlite.Connection):
                 await db.execute(
                     f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}"
                 )
+
+    await db.execute(
+        "UPDATE papers SET title = filename WHERE title IS NULL OR TRIM(title) = ''"
+    )

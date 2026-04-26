@@ -2,7 +2,7 @@ import type { AppSettings, LLMProvider, PaperSource } from './types'
 
 const API_BASE = '/api'
 
-export async function uploadPaper(file: File): Promise<{ id: string; filename: string; status: string }> {
+export async function uploadPaper(file: File): Promise<{ id: string; filename: string; title?: string; status: string }> {
   const form = new FormData()
   form.append('file', file)
   const res = await fetch(`${API_BASE}/papers/upload`, { method: 'POST', body: form })
@@ -12,6 +12,8 @@ export async function uploadPaper(file: File): Promise<{ id: string; filename: s
 
 export async function getPaperStatus(paperId: string): Promise<{
   id: string
+  filename?: string
+  title?: string
   status: string
   summary?: string
   keywords?: string[]
@@ -114,6 +116,7 @@ export function streamChat(
 export async function fetchPapers(): Promise<Array<{
   id: string
   filename: string
+  title?: string
   status: string
   summary?: string
   created_at: string
@@ -126,6 +129,7 @@ export async function fetchPapers(): Promise<Array<{
 export async function fetchPaperDetail(paperId: string): Promise<{
   id: string
   filename: string
+  title?: string
   status: string
   summary?: string
   keywords?: string[]

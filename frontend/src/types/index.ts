@@ -20,6 +20,7 @@ export interface ChatMessage {
 export interface PaperFile {
   id: string
   name: string
+  filename?: string
   status: 'uploading' | 'parsing' | 'indexing' | 'ready' | 'error'
   summary?: string
   keywords?: string[]

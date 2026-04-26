@@ -15,6 +15,7 @@ from app.core.config import settings
 from app.core.database import get_db
 from app.services.knowledge_graph import knowledge_graph_indexer
 from app.services.mineru import mineru_service
+from app.services.paper_metadata import extract_paper_title, filename_to_title
 from app.services.paper_ai import paper_ai_service
 from app.services.vector_store import vector_store
 
@@ -62,24 +63,37 @@ async def _process_paper(paper_id: str, filepath: str):
             await db.commit()
             return
 
+        paper_title = extract_paper_title(
+            parsed,
+            filename=Path(filepath).name,
+            pdf_path=filepath,
+        )
         await db.execute(
             """UPDATE papers
                SET status = 'indexing',
+                   title = ?,
                    markdown_path = ?,
                    content_list_path = ?,
                    assets_dir = ?,
                    updated_at = CURRENT_TIMESTAMP
                WHERE id = ?""",
-            (parsed.markdown_path, parsed.content_list_path, parsed.assets_dir, paper_id),
+            (
+                paper_title,
+                parsed.markdown_path,
+                parsed.content_list_path,
+                parsed.assets_dir,
+                paper_id,
+            ),
         )
         await db.commit()
 
         index_metadata = vector_store.index_paper(paper_id, parsed)
         overview = await paper_ai_service.generate_overview(
             paper_id=paper_id,
-            filename=Path(filepath).name,
+            filename=paper_title or Path(filepath).name,
         )
         metadata_payload = {
+            "title": paper_title,
             "page_count": parsed.page_count,
             "stats": index_metadata.get("stats", {}),
             "summary_preview": index_metadata.get("summary_preview", ""),
@@ -130,16 +144,22 @@ async def upload_paper(background_tasks: BackgroundTasks, file: UploadFile = Fil
 
     db = await get_db()
     try:
+        fallback_title = filename_to_title(safe_filename)
         await db.execute(
-            "INSERT INTO papers (id, filename, filepath, status) VALUES (?, ?, ?, 'uploading')",
-            (paper_id, safe_filename, str(filepath)),
+            "INSERT INTO papers (id, filename, title, filepath, status) VALUES (?, ?, ?, ?, 'uploading')",
+            (paper_id, safe_filename, fallback_title, str(filepath)),
         )
         await db.commit()
     finally:
         await db.close()
 
     background_tasks.add_task(_process_paper, paper_id, str(filepath))
-    return {"id": paper_id, "filename": safe_filename, "status": "uploading"}
+    return {
+        "id": paper_id,
+        "filename": safe_filename,
+        "title": fallback_title,
+        "status": "uploading",
+    }
 
 
 @router.get("/papers")
@@ -147,7 +167,9 @@ async def list_papers():
     db = await get_db()
     try:
         cursor = await db.execute(
-            "SELECT id, filename, status, summary, created_at FROM papers ORDER BY created_at DESC"
+            """SELECT id, filename, title, status, summary, created_at
+               FROM papers
+               ORDER BY created_at DESC"""
         )
         rows = await cursor.fetchall()
         return [dict(row) for row in rows]
@@ -260,7 +282,7 @@ async def get_paper_status(paper_id: str):
     db = await get_db()
     try:
         cursor = await db.execute(
-            """SELECT id, status, summary, keywords, page_count, metadata_json
+            """SELECT id, filename, title, status, summary, keywords, page_count, metadata_json
                FROM papers
                WHERE id = ?""",
             (paper_id,),

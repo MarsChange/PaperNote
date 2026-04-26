@@ -117,6 +117,56 @@ def test_heuristic_multimodal_enrichment_without_llm_key():
         settings.enable_multimodal_enrichment = original_enabled
 
 
+def test_llm_payload_normalizes_list_entity():
+    enricher = MultimodalEnricher()
+    block = {
+        "id": "paper-image-28",
+        "type": "image",
+        "title": "Figure 2: degradation workflow",
+    }
+    payload = {
+        "summary": "Figure 2 summarizes the degradation prediction workflow.",
+        "detailed_description": "The figure links raw curves, feature extraction, and model output.",
+        "entity": [
+            {
+                "name": "Figure 2",
+                "type": "figure",
+                "summary": "A workflow diagram for degradation prediction.",
+            }
+        ],
+        "keywords": ["degradation", {"term": "workflow"}],
+        "claims": [{"claim": "The model uses curve-derived features."}],
+        "relations": [{"type": "shows", "target": "feature extraction"}],
+    }
+
+    metadata = enricher._normalize_llm_payload(payload, block)
+
+    assert metadata["source"] == "llm"
+    assert metadata["entity"]["name"] == "Figure 2"
+    assert metadata["entity"]["type"] == "figure"
+    assert metadata["keywords"] == ["degradation", "workflow"]
+    assert metadata["claims"] == ["The model uses curve-derived features."]
+    assert metadata["relations"][0]["target"] == "feature extraction"
+
+
+def test_semantic_text_accepts_legacy_list_entity():
+    enricher = MultimodalEnricher()
+    semantic_text = enricher.semantic_text(
+        {
+            "summary": "A semantic summary.",
+            "detailed_description": "",
+            "entity": [{"name": "Figure 3"}],
+            "keywords": ["battery"],
+            "claims": [],
+        }
+    )
+
+    assert "Figure 3" in semantic_text
+    assert "Keywords: battery" in semantic_text
+
+
 if __name__ == "__main__":
     test_heuristic_multimodal_enrichment_without_llm_key()
+    test_llm_payload_normalizes_list_entity()
+    test_semantic_text_accepts_legacy_list_entity()
     print(f"{Path(__file__).name}: ok")

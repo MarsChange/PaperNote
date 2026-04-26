@@ -16,6 +16,7 @@ from uuid import uuid4
 import httpx
 
 from app.core.config import settings
+from app.services.figure_extractor import mineru_figure_extractor
 
 logger = logging.getLogger(__name__)
 
@@ -294,16 +295,28 @@ class MinerUService:
             if not markdown_content and content_list:
                 markdown_content = self._content_list_to_markdown(content_list)
 
+            content_list, figure_metadata = mineru_figure_extractor.enhance_content_list(
+                pdf_path=pdf_path,
+                output_dir=output_path,
+                content_list=content_list,
+                markdown_content=markdown_content,
+            )
+            if figure_metadata.get("extracted"):
+                logger.info(
+                    "Extracted %s composite figures from MinerU layout metadata",
+                    figure_metadata["extracted"],
+                )
+
             if not markdown_path.exists() and markdown_content:
                 markdown_path = output_path / f"{stem}.md"
                 markdown_path.write_text(markdown_content, encoding="utf-8")
 
             if not content_list_path.exists():
                 content_list_path = output_path / f"{stem}_content_list.json"
-                content_list_path.write_text(
-                    json.dumps(content_list, ensure_ascii=False, indent=2),
-                    encoding="utf-8",
-                )
+            content_list_path.write_text(
+                json.dumps(content_list, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
 
             return ParseResult(
                 markdown_path=str(markdown_path),
@@ -376,6 +389,18 @@ class MinerUService:
                     )
 
             doc.close()
+
+            content_list, figure_metadata = mineru_figure_extractor.enhance_content_list(
+                pdf_path=pdf_path,
+                output_dir=output_path,
+                content_list=content_list,
+                markdown_content="\n\n---\n\n".join(markdown_pages).strip(),
+            )
+            if figure_metadata.get("extracted"):
+                logger.info(
+                    "Extracted %s composite figures from local layout metadata",
+                    figure_metadata["extracted"],
+                )
 
             markdown_content = "\n\n---\n\n".join(markdown_pages).strip()
             if not markdown_content:

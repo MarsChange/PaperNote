@@ -234,7 +234,11 @@ class PaperKnowledgeGraphIndexer:
             section = block.get("section") or f"Page {page_number}"
             title = block.get("title") or section
             semantic_metadata = block.get("semantic_metadata") or {}
+            if not isinstance(semantic_metadata, dict):
+                semantic_metadata = {}
             semantic_entity = semantic_metadata.get("entity") or {}
+            if not isinstance(semantic_entity, dict):
+                semantic_entity = {}
 
             page_node_id = f"page:{paper_id}:{page_number}"
             section_node_id = f"section:{paper_id}:{page_number}:{self._slug(section)}"
@@ -306,7 +310,10 @@ class PaperKnowledgeGraphIndexer:
                     str(block.get("section", "")),
                     str(block.get("content", "")),
                     str(block.get("semantic_summary", "")),
-                    " ".join(str(item) for item in semantic_metadata.get("keywords", [])),
+                    " ".join(
+                        str(item)
+                        for item in self._as_list(semantic_metadata.get("keywords", []))
+                    ),
                     str(semantic_entity.get("summary", "")),
                 ]
             )
@@ -419,6 +426,13 @@ class PaperKnowledgeGraphIndexer:
 
     def _normalize(self, text: str) -> str:
         return re.sub(r"\s+", " ", str(text or "")).strip()
+
+    def _as_list(self, value: Any) -> list[Any]:
+        if isinstance(value, list):
+            return value
+        if value:
+            return [value]
+        return []
 
     def _slug(self, value: str) -> str:
         slug = re.sub(r"[^a-zA-Z0-9]+", "-", value.lower()).strip("-")

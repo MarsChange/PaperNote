@@ -4,6 +4,7 @@ import { deletePaper, fetchPapers } from '../../api'
 interface Paper {
   id: string
   filename: string
+  title?: string
   status: string
   summary?: string
   created_at: string
@@ -92,7 +93,9 @@ export default function HistorySidebar({ open, onClose, onSelectPaper, currentPa
             </div>
           ) : (
             <div className="space-y-3">
-              {papers.map((paper) => (
+              {papers.map((paper) => {
+                const displayTitle = paper.title?.trim() || paper.filename
+                return (
                 <div
                   key={paper.id}
                   className={`group rounded-[24px] border px-4 py-4 transition-all ${
@@ -119,8 +122,13 @@ export default function HistorySidebar({ open, onClose, onSelectPaper, currentPa
                         </span>
                       </div>
                       <p className="mt-3 text-base font-medium text-text-primary">
-                        {paper.filename}
+                        {displayTitle}
                       </p>
+                      {displayTitle !== paper.filename && (
+                        <p className="mt-1 truncate text-xs text-text-tertiary">
+                          {paper.filename}
+                        </p>
+                      )}
                       {paper.summary && (
                         <p className="mt-2 text-sm leading-6 text-text-secondary">
                           {paper.summary}
@@ -158,7 +166,8 @@ export default function HistorySidebar({ open, onClose, onSelectPaper, currentPa
                     )}
                   </div>
                 </div>
-              ))}
+                )
+              })}
             </div>
           )}
         </div>

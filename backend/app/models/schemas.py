@@ -7,6 +7,7 @@ class Paper:
     id: str
     filename: str
     filepath: str
+    title: Optional[str] = None
     status: str = "uploading"
     markdown_path: Optional[str] = None
     summary: Optional[str] = None

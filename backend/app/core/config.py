@@ -24,6 +24,16 @@ class Settings(BaseSettings):
         base_dir / "data" / "milvus" / "papernote.db"
     )
     milvus_collection: str = os.getenv("MILVUS_COLLECTION") or "papernote_blocks"
+    milvus_grpc_keepalive_time_ms: int = int(
+        os.getenv("MILVUS_GRPC_KEEPALIVE_TIME_MS", "120000")
+    )
+    milvus_grpc_keepalive_timeout_ms: int = int(
+        os.getenv("MILVUS_GRPC_KEEPALIVE_TIMEOUT_MS", "20000")
+    )
+    milvus_grpc_keepalive_permit_without_calls: bool = (
+        os.getenv("MILVUS_GRPC_KEEPALIVE_PERMIT_WITHOUT_CALLS", "false").lower()
+        == "true"
+    )
 
     # Frontend
     allowed_origins: list[str] = [
@@ -74,6 +84,15 @@ class Settings(BaseSettings):
     mineru_api_key: str = os.getenv("MINERU_API_KEY", "")
     mineru_model_version: str = os.getenv("MINERU_MODEL_VERSION", "vlm")
     mineru_language: str = os.getenv("MINERU_LANGUAGE", "ch")
+    enable_mineru_figure_crops: bool = (
+        os.getenv("ENABLE_MINERU_FIGURE_CROPS", "true").lower() == "true"
+    )
+    delete_mineru_raw_images_after_figure_crops: bool = (
+        os.getenv("DELETE_MINERU_RAW_IMAGES_AFTER_FIGURE_CROPS", "true").lower()
+        == "true"
+    )
+    figure_crop_dpi: int = int(os.getenv("FIGURE_CROP_DPI", "220"))
+    figure_crop_padding: float = float(os.getenv("FIGURE_CROP_PADDING", "0.012"))
 
 
 settings = Settings()

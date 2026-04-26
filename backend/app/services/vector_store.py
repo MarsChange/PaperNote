@@ -48,7 +48,16 @@ class VectorStore:
             uri = settings.milvus_uri
             if not re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://", uri):
                 Path(uri).expanduser().parent.mkdir(parents=True, exist_ok=True)
-            self._client = MilvusClient(uri=uri)
+            self._client = MilvusClient(
+                uri=uri,
+                grpc_options={
+                    "grpc.keepalive_time_ms": settings.milvus_grpc_keepalive_time_ms,
+                    "grpc.keepalive_timeout_ms": settings.milvus_grpc_keepalive_timeout_ms,
+                    "grpc.keepalive_permit_without_calls": (
+                        settings.milvus_grpc_keepalive_permit_without_calls
+                    ),
+                },
+            )
         return self._client
 
     def _embedding_credentials(self) -> Optional[tuple[str, str]]:
@@ -198,10 +207,19 @@ class VectorStore:
         if item_type == "image":
             caption = ", ".join(item.get("image_caption", []) or [])
             footnote = ", ".join(item.get("image_footnote", []) or [])
+            figure_id = self._normalize_text(str(item.get("figure_id", "")))
+            figure_context = self._normalize_text(str(item.get("figure_context", "")))
+            subfigure_count = item.get("subfigure_count")
+            if figure_id:
+                parts.append(f"Figure ID: {figure_id}")
             if caption:
                 parts.append(f"Caption: {caption}")
             if footnote:
                 parts.append(f"Footnote: {footnote}")
+            if subfigure_count:
+                parts.append(f"Composite crop merged {subfigure_count} visual regions")
+            if figure_context:
+                parts.append(f"Figure reference context: {figure_context}")
         elif item_type == "table":
             caption = ", ".join(item.get("table_caption", []) or [])
             footnote = ", ".join(item.get("table_footnote", []) or [])

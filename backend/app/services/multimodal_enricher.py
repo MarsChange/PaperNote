@@ -231,6 +231,9 @@ class MultimodalEnricher:
             ),
             "content": self._body_text(str(block_type), source_item, block)[:2500],
             "nearby_context": context_text[:2500],
+            "figure_id": source_item.get("figure_id"),
+            "figure_source": source_item.get("figure_source"),
+            "subfigure_count": source_item.get("subfigure_count"),
         }
         return (
             "Create semantic metadata for this paper block. Return JSON with keys: "
@@ -254,24 +257,80 @@ class MultimodalEnricher:
     def _normalize_llm_payload(
         self, payload: dict[str, Any], block: dict[str, Any]
     ) -> dict[str, Any]:
-        entity = payload.get("entity") or payload.get("entity_info") or {}
+        if not isinstance(payload, dict):
+            payload = {}
         block_type = str(block.get("type", "generic"))
-        summary = str(payload.get("summary") or entity.get("summary") or "").strip()
-        detailed = str(payload.get("detailed_description") or summary).strip()
+        raw_entity = (
+            payload.get("entity")
+            or payload.get("entity_info")
+            or payload.get("entities")
+            or {}
+        )
+        entity = self._normalize_entity_payload(raw_entity, block, block_type)
+        summary = self._pick_text(
+            payload.get("summary"),
+            payload.get("semantic_summary"),
+            entity.get("summary"),
+            payload.get("description"),
+            payload.get("analysis"),
+            block.get("title"),
+        )
+        detailed = self._pick_text(
+            payload.get("detailed_description"),
+            payload.get("detailed"),
+            payload.get("description"),
+            payload.get("analysis"),
+            summary,
+        )
+        entity["summary"] = self._pick_text(entity.get("summary"), summary)[:900]
         return {
             "version": ENRICHMENT_VERSION,
             "source": "llm",
             "modality": block_type,
             "summary": summary[:900],
             "detailed_description": detailed[:2500],
-            "entity": {
-                "name": str(entity.get("name") or entity.get("entity_name") or block.get("title") or block.get("id")),
-                "type": str(entity.get("type") or entity.get("entity_type") or block_type),
-                "summary": str(entity.get("summary") or summary)[:900],
-            },
+            "entity": entity,
             "keywords": self._dedupe_texts(payload.get("keywords", []), 12),
             "claims": self._dedupe_texts(payload.get("claims", []), 8),
             "relations": self._normalize_relations(payload.get("relations", []), block),
+        }
+
+    def _normalize_entity_payload(
+        self, raw_entity: Any, block: dict[str, Any], block_type: str
+    ) -> dict[str, str]:
+        entity: dict[str, Any] = {}
+        if isinstance(raw_entity, dict):
+            entity = raw_entity
+        elif isinstance(raw_entity, list):
+            entity = next(
+                (item for item in raw_entity if isinstance(item, dict)),
+                {},
+            )
+            if not entity:
+                entity = {"name": self._pick_text(raw_entity)}
+        elif raw_entity:
+            entity = {"name": self._pick_text(raw_entity)}
+
+        return {
+            "name": self._pick_text(
+                entity.get("name"),
+                entity.get("entity_name"),
+                entity.get("label"),
+                entity.get("title"),
+                block.get("title"),
+                block.get("id"),
+            )[:160],
+            "type": self._pick_text(
+                entity.get("type"),
+                entity.get("entity_type"),
+                entity.get("modality"),
+                block_type,
+            )[:80],
+            "summary": self._pick_text(
+                entity.get("summary"),
+                entity.get("description"),
+                entity.get("text"),
+            )[:900],
         }
 
     def _merge_metadata(
@@ -308,22 +367,28 @@ class MultimodalEnricher:
         ]
         entity = metadata.get("entity") or {}
         if entity:
+            if isinstance(entity, dict):
+                entity_values = [
+                    str(entity.get("name", "")),
+                    str(entity.get("type", "")),
+                    str(entity.get("summary", "")),
+                ]
+            else:
+                entity_values = self._dedupe_texts(entity, 3)
             parts.append(
                 "Entity: "
                 + " | ".join(
                     value
-                    for value in [
-                        str(entity.get("name", "")),
-                        str(entity.get("type", "")),
-                        str(entity.get("summary", "")),
-                    ]
+                    for value in entity_values
                     if value
                 )
             )
-        if metadata.get("keywords"):
-            parts.append("Keywords: " + ", ".join(metadata["keywords"]))
-        if metadata.get("claims"):
-            parts.append("Claims: " + "; ".join(metadata["claims"]))
+        keywords = self._dedupe_texts(metadata.get("keywords", []), 12)
+        if keywords:
+            parts.append("Keywords: " + ", ".join(keywords))
+        claims = self._dedupe_texts(metadata.get("claims", []), 8)
+        if claims:
+            parts.append("Claims: " + "; ".join(claims))
         return "\n".join(part for part in parts if part).strip()
 
     def _context_for_item(
@@ -334,6 +399,9 @@ class MultimodalEnricher:
         current_item = content_list[source_index]
         current_page = int(current_item.get("page_idx", 0))
         texts: list[str] = []
+        figure_context = self._normalize(str(current_item.get("figure_context", "")))
+        if figure_context:
+            texts.append(figure_context)
         for index, item in enumerate(content_list):
             if index == source_index or not isinstance(item, dict):
                 continue
@@ -391,6 +459,11 @@ class MultimodalEnricher:
             return {
                 "asset_available": bool(image_path and Path(image_path).exists()),
                 "asset_path": image_path,
+                "figure_id": source_item.get("figure_id", ""),
+                "figure_source": source_item.get("figure_source", ""),
+                "is_composite_figure": bool(source_item.get("is_composite_figure")),
+                "subfigure_count": source_item.get("subfigure_count", 0),
+                "figure_bbox": source_item.get("figure_bbox", []),
             }
         return {}
 
@@ -494,7 +567,7 @@ class MultimodalEnricher:
         deduped: list[str] = []
         seen: set[str] = set()
         for value in values:
-            text = self._normalize(str(value))
+            text = self._pick_text(value)
             key = text.lower()
             if not text or key in seen:
                 continue
@@ -510,6 +583,35 @@ class MultimodalEnricher:
         if isinstance(value, list):
             return [str(item).strip() for item in value if str(item).strip()]
         return []
+
+    def _pick_text(self, *values: Any) -> str:
+        for value in values:
+            text = self._coerce_text(value)
+            if text:
+                return text
+        return ""
+
+    def _coerce_text(self, value: Any) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, list):
+            return self._pick_text(*value)
+        if isinstance(value, dict):
+            return self._pick_text(
+                value.get("summary"),
+                value.get("detailed_description"),
+                value.get("description"),
+                value.get("name"),
+                value.get("entity_name"),
+                value.get("label"),
+                value.get("title"),
+                value.get("text"),
+                value.get("target"),
+                value.get("keyword"),
+                value.get("term"),
+                value.get("claim"),
+            )
+        return self._normalize(str(value))
 
     def _parse_json(self, text: str) -> Optional[dict[str, Any]]:
         stripped = text.strip()
