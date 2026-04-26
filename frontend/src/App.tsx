@@ -1,12 +1,33 @@
-import { useState, useCallback, useRef } from 'react'
-import { PanelGroup, Panel, PanelResizeHandle } from 'react-resizable-panels'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels'
 import PDFViewer from './components/pdf/PDFViewer'
 import ChatSidebar from './components/chat/ChatSidebar'
 import UploadOverlay from './components/layout/UploadOverlay'
 import SettingsModal from './components/settings/SettingsModal'
 import HistorySidebar from './components/layout/HistorySidebar'
-import { uploadPaper, getPaperStatus, createConversation, streamChat, fetchAnnotations, createAnnotation, deleteAnnotation, fetchPaperDetail, fetchMessages } from './api'
-import type { PaperFile, ChatMessage, Annotation } from './types'
+import {
+  createAnnotation,
+  createConversation,
+  deleteAnnotation,
+  fetchAnnotations,
+  fetchMessages,
+  fetchPaperDetail,
+  getPaperStatus,
+  streamChat,
+  translateSelection,
+  uploadPaper,
+} from './api'
+import type { Annotation, ChatMessage, PaperFile, PaperSource } from './types'
+
+function parseSources(metadataJson?: string): PaperSource[] {
+  if (!metadataJson) return []
+  try {
+    const parsed = JSON.parse(metadataJson)
+    return Array.isArray(parsed?.sources) ? parsed.sources : []
+  } catch {
+    return []
+  }
+}
 
 function App() {
   const [file, setFile] = useState<PaperFile | null>(null)
@@ -17,163 +38,18 @@ function App() {
   const [isStreaming, setIsStreaming] = useState(false)
   const [annotations, setAnnotations] = useState<Annotation[]>([])
   const [scrollToPage, setScrollToPage] = useState(0)
+  const [isCompact, setIsCompact] = useState(false)
+
   const conversationIdRef = useRef<string | null>(null)
   const abortRef = useRef<AbortController | null>(null)
 
-  const pollStatus = useCallback(async (paperId: string, filename: string) => {
-    const poll = async () => {
-      try {
-        const data = await getPaperStatus(paperId)
-        setFile(prev => prev ? { ...prev, status: data.status as PaperFile['status'], summary: data.summary } : null)
-
-        if (data.status === 'ready') {
-          // Create conversation
-          const conv = await createConversation(paperId)
-          conversationIdRef.current = conv.id
-
-          setMessages([{
-            id: crypto.randomUUID(),
-            role: 'assistant',
-            content: `I've finished parsing **${filename}**. Feel free to ask me any questions about this paper.`,
-            timestamp: Date.now(),
-          }])
-          return
-        }
-
-        if (data.status === 'error') {
-          setMessages([{
-            id: crypto.randomUUID(),
-            role: 'assistant',
-            content: `Failed to parse **${filename}**. Please check that MinerU API is configured correctly in settings.`,
-            timestamp: Date.now(),
-          }])
-          return
-        }
-
-        // Still processing — poll again
-        setTimeout(poll, 2000)
-      } catch {
-        setTimeout(poll, 3000)
-      }
-    }
-    poll()
+  useEffect(() => {
+    const media = window.matchMedia('(max-width: 1024px)')
+    const handleChange = () => setIsCompact(media.matches)
+    handleChange()
+    media.addEventListener('change', handleChange)
+    return () => media.removeEventListener('change', handleChange)
   }, [])
-
-  const handleFileSelect = useCallback(async (selectedFile: File) => {
-    const url = URL.createObjectURL(selectedFile)
-    setPdfUrl(url)
-
-    const paper: PaperFile = {
-      id: crypto.randomUUID(),
-      name: selectedFile.name,
-      status: 'uploading',
-      uploadedAt: Date.now(),
-    }
-    setFile(paper)
-    setMessages([])
-    conversationIdRef.current = null
-
-    try {
-      const result = await uploadPaper(selectedFile)
-      setFile(prev => prev ? { ...prev, id: result.id, status: 'parsing' } : null)
-      pollStatus(result.id, selectedFile.name)
-    } catch {
-      setFile(prev => prev ? { ...prev, status: 'error' } : null)
-      setMessages([{
-        id: crypto.randomUUID(),
-        role: 'assistant',
-        content: 'Failed to upload. Is the backend running on port 8000?',
-        timestamp: Date.now(),
-      }])
-    }
-  }, [pollStatus])
-
-  const handleSendMessage = useCallback((content: string) => {
-    if (!file || !conversationIdRef.current || isStreaming) return
-
-    // Add user message + assistant placeholder atomically
-    const assistantMsgId = crypto.randomUUID()
-    setMessages(prev => [
-      ...prev,
-      { id: crypto.randomUUID(), role: 'user' as const, content, timestamp: Date.now() },
-      { id: assistantMsgId, role: 'assistant' as const, content: '', timestamp: Date.now() },
-    ])
-    setIsStreaming(true)
-
-    // Stream response
-    abortRef.current = streamChat(
-      conversationIdRef.current!,
-      file.id,
-      content,
-      {
-        onToken: (token) => {
-          setMessages(prev =>
-            prev.map(m =>
-              m.id === assistantMsgId
-                ? { ...m, content: m.content + token }
-                : m
-            )
-          )
-        },
-        onDone: () => {
-          setIsStreaming(false)
-        },
-        onError: (error) => {
-          setMessages(prev =>
-            prev.map(m =>
-              m.id === assistantMsgId
-                ? { ...m, content: m.content || `Error: ${error}` }
-                : m
-            )
-          )
-          setIsStreaming(false)
-        },
-      },
-    )
-  }, [file, isStreaming])
-
-  const handleQuickAction = useCallback((_label: string, prompt: string) => {
-    if (!file || !conversationIdRef.current || isStreaming) return
-
-    // No user bubble for quick actions — just create assistant placeholder directly
-    const assistantMsgId = crypto.randomUUID()
-    setMessages(prev => [
-      ...prev,
-      { id: assistantMsgId, role: 'assistant' as const, content: '', timestamp: Date.now() },
-    ])
-    setIsStreaming(true)
-
-    // Stream with prompt
-    abortRef.current = streamChat(
-      conversationIdRef.current!,
-      file.id,
-      prompt,
-      {
-        onToken: (token) => {
-          setMessages(prev =>
-            prev.map(m =>
-              m.id === assistantMsgId
-                ? { ...m, content: m.content + token }
-                : m
-            )
-          )
-        },
-        onDone: () => {
-          setIsStreaming(false)
-        },
-        onError: (error) => {
-          setMessages(prev =>
-            prev.map(m =>
-              m.id === assistantMsgId
-                ? { ...m, content: m.content || `Error: ${error}` }
-                : m
-            )
-          )
-          setIsStreaming(false)
-        },
-      },
-    )
-  }, [file, isStreaming])
 
   const loadAnnotations = useCallback(async (paperId: string) => {
     try {
@@ -184,95 +60,290 @@ function App() {
     }
   }, [])
 
+  const pollStatus = useCallback(async (paperId: string, filename: string) => {
+    const poll = async () => {
+      try {
+        const data = await getPaperStatus(paperId)
+        setFile((prev) => prev ? {
+          ...prev,
+          status: data.status as PaperFile['status'],
+          summary: data.summary,
+          keywords: data.keywords || [],
+          pageCount: data.page_count,
+          metadata: data.metadata,
+        } : null)
+
+        if (data.status === 'ready') {
+          const conv = await createConversation(paperId)
+          conversationIdRef.current = conv.id
+          await loadAnnotations(paperId)
+          setMessages([
+            {
+              id: crypto.randomUUID(),
+              role: 'assistant',
+              content: `**${filename}** 已完成解析。你现在可以询问方法细节、实验结果、图表含义，或者直接让系统总结全文。`,
+              timestamp: Date.now(),
+            },
+          ])
+          return
+        }
+
+        if (data.status === 'error') {
+          setMessages([
+            {
+              id: crypto.randomUUID(),
+              role: 'assistant',
+              content: '文档解析失败。请检查 MinerU 配置或模型设置后重试。',
+              timestamp: Date.now(),
+            },
+          ])
+          return
+        }
+
+        setTimeout(poll, data.status === 'indexing' ? 2500 : 2000)
+      } catch {
+        setTimeout(poll, 3000)
+      }
+    }
+
+    poll()
+  }, [loadAnnotations])
+
+  const handleFileSelect = useCallback(async (selectedFile: File) => {
+    const url = URL.createObjectURL(selectedFile)
+    setPdfUrl(url)
+    setAnnotations([])
+    setMessages([])
+    conversationIdRef.current = null
+
+    setFile({
+      id: crypto.randomUUID(),
+      name: selectedFile.name,
+      status: 'uploading',
+      uploadedAt: Date.now(),
+    })
+
+    try {
+      const result = await uploadPaper(selectedFile)
+      setFile((prev) => prev ? {
+        ...prev,
+        id: result.id,
+        status: 'parsing',
+      } : null)
+      await pollStatus(result.id, selectedFile.name)
+    } catch {
+      setFile((prev) => prev ? { ...prev, status: 'error' } : null)
+      setMessages([
+        {
+          id: crypto.randomUUID(),
+          role: 'assistant',
+          content: '上传失败。请确认后端服务是否已启动。',
+          timestamp: Date.now(),
+        },
+      ])
+    }
+  }, [pollStatus])
+
+  const handleSendMessage = useCallback((content: string) => {
+    if (!file || !conversationIdRef.current || isStreaming) return
+
+    const assistantMsgId = crypto.randomUUID()
+    setMessages((prev) => [
+      ...prev,
+      { id: crypto.randomUUID(), role: 'user', content, timestamp: Date.now() },
+      { id: assistantMsgId, role: 'assistant', content: '', timestamp: Date.now(), sources: [] },
+    ])
+    setIsStreaming(true)
+
+    abortRef.current = streamChat(
+      conversationIdRef.current,
+      file.id,
+      content,
+      {
+        onToken: (token) => {
+          setMessages((prev) => prev.map((message) => (
+            message.id === assistantMsgId
+              ? { ...message, content: message.content + token }
+              : message
+          )))
+        },
+        onDone: (_answer, sources) => {
+          setMessages((prev) => prev.map((message) => (
+            message.id === assistantMsgId
+              ? { ...message, sources }
+              : message
+          )))
+          setIsStreaming(false)
+        },
+        onError: (error) => {
+          setMessages((prev) => prev.map((message) => (
+            message.id === assistantMsgId
+              ? { ...message, content: message.content || `Error: ${error}` }
+              : message
+          )))
+          setIsStreaming(false)
+        },
+      },
+    )
+  }, [file, isStreaming])
+
+  const handleQuickAction = useCallback((label: string, prompt: string) => {
+    if (!file || !conversationIdRef.current || isStreaming) return
+
+    const assistantMsgId = crypto.randomUUID()
+    setMessages((prev) => [
+      ...prev,
+      {
+        id: crypto.randomUUID(),
+        role: 'user',
+        content: label,
+        timestamp: Date.now(),
+      },
+      {
+        id: assistantMsgId,
+        role: 'assistant',
+        content: '',
+        timestamp: Date.now(),
+        sources: [],
+      },
+    ])
+    setIsStreaming(true)
+
+    abortRef.current = streamChat(
+      conversationIdRef.current,
+      file.id,
+      prompt,
+      {
+        onToken: (token) => {
+          setMessages((prev) => prev.map((message) => (
+            message.id === assistantMsgId
+              ? { ...message, content: message.content + token }
+              : message
+          )))
+        },
+        onDone: (_answer, sources) => {
+          setMessages((prev) => prev.map((message) => (
+            message.id === assistantMsgId
+              ? { ...message, sources }
+              : message
+          )))
+          setIsStreaming(false)
+        },
+        onError: (error) => {
+          setMessages((prev) => prev.map((message) => (
+            message.id === assistantMsgId
+              ? { ...message, content: message.content || `Error: ${error}` }
+              : message
+          )))
+          setIsStreaming(false)
+        },
+      },
+    )
+  }, [file, isStreaming])
+
   const handleDeleteAnnotation = useCallback(async (annotationId: string) => {
     if (!file) return
     try {
       await deleteAnnotation(file.id, annotationId)
-      setAnnotations(prev => prev.filter(a => a.id !== annotationId))
+      setAnnotations((prev) => prev.filter((annotation) => annotation.id !== annotationId))
     } catch {
-      // silently fail
+      // noop
     }
   }, [file])
 
-  const handleCreateAnnotation = useCallback(async (color: string, text: string, pageNumber: number) => {
+  const handleCreateAnnotation = useCallback(async (
+    color: string,
+    text: string,
+    pageNumber: number,
+    note?: string,
+  ) => {
     if (!file) return
     const normalizedText = text.replace(/\s+/g, ' ').trim()
     if (!normalizedText) return
+
     try {
-      const ann = await createAnnotation(file.id, {
+      const annotation = await createAnnotation(file.id, {
         page_number: pageNumber,
         text_content: normalizedText,
         color,
+        note,
       })
-      setAnnotations(prev => [...prev, ann])
-    } catch (err) {
-      console.error('Failed to create annotation:', err)
+      setAnnotations((prev) => [...prev, annotation])
+    } catch (error) {
+      console.error('Failed to create annotation:', error)
     }
   }, [file])
 
+  const handleTranslateSelection = useCallback(async (text: string, _pageNumber: number) => {
+    if (!file) return ''
+    return translateSelection(file.id, text)
+  }, [file])
+
   const handleSelectPaper = useCallback(async (paper: { id: string; filename: string }) => {
-    const url = `/api/papers/${paper.id}/pdf`
-    setPdfUrl(url)
-    setFile({
-      id: paper.id,
-      name: paper.filename,
-      status: 'ready',
-      uploadedAt: Date.now(),
-    })
+    setPdfUrl(`/api/papers/${paper.id}/pdf`)
+    setAnnotations([])
     setMessages([])
     conversationIdRef.current = null
-    setAnnotations([])
 
     try {
-      // Check for existing conversations
       const detail = await fetchPaperDetail(paper.id)
+      setFile({
+        id: paper.id,
+        name: detail.filename,
+        status: detail.status as PaperFile['status'],
+        summary: detail.summary,
+        keywords: detail.keywords || [],
+        pageCount: detail.page_count,
+        metadata: detail.metadata,
+        uploadedAt: Date.now(),
+      })
+
+      await loadAnnotations(paper.id)
+
       const existingConversations = detail.conversations || []
-
-      let convId: string
-
       if (existingConversations.length > 0) {
-        // Use the most recent conversation (already sorted DESC by backend)
-        convId = existingConversations[0].id
+        const convId = existingConversations[0].id
         conversationIdRef.current = convId
-
-        // Load existing messages
-        const msgs = await fetchMessages(convId)
-        if (msgs.length > 0) {
-          setMessages(msgs.map(m => ({
-            id: m.id,
-            role: m.role as 'user' | 'assistant',
-            content: m.content,
-            timestamp: new Date(m.created_at).getTime(),
+        const storedMessages = await fetchMessages(convId)
+        if (storedMessages.length > 0) {
+          setMessages(storedMessages.map((message) => ({
+            id: message.id,
+            role: message.role as ChatMessage['role'],
+            content: message.content,
+            sources: parseSources(message.metadata_json),
+            timestamp: new Date(message.created_at).getTime(),
           })))
         } else {
-          setMessages([{
-            id: crypto.randomUUID(),
-            role: 'assistant',
-            content: `Loaded **${paper.filename}**. Feel free to ask me any questions about this paper.`,
-            timestamp: Date.now(),
-          }])
+          setMessages([
+            {
+              id: crypto.randomUUID(),
+              role: 'assistant',
+              content: `已载入 **${detail.filename}**。你可以继续追问，也可以跳到右侧让系统重新总结全文。`,
+              timestamp: Date.now(),
+            },
+          ])
         }
       } else {
-        // No existing conversation — create a new one
         const conv = await createConversation(paper.id)
-        convId = conv.id
-        conversationIdRef.current = convId
-        setMessages([{
+        conversationIdRef.current = conv.id
+        setMessages([
+          {
+            id: crypto.randomUUID(),
+            role: 'assistant',
+            content: `已载入 **${detail.filename}**。从任意问题开始即可。`,
+            timestamp: Date.now(),
+          },
+        ])
+      }
+    } catch {
+      setMessages([
+        {
           id: crypto.randomUUID(),
           role: 'assistant',
-          content: `Loaded **${paper.filename}**. Feel free to ask me any questions about this paper.`,
+          content: '加载论文会话失败，请稍后重试。',
           timestamp: Date.now(),
-        }])
-      }
-
-      loadAnnotations(paper.id)
-    } catch {
-      setMessages([{
-        id: crypto.randomUUID(),
-        role: 'assistant',
-        content: 'Failed to load conversation for this paper.',
-        timestamp: Date.now(),
-      }])
+        },
+      ])
     }
   }, [loadAnnotations])
 
@@ -299,76 +370,88 @@ function App() {
           onClose={() => setShowHistory(false)}
           onSelectPaper={handleSelectPaper}
         />
-        {showSettings && (
-          <SettingsModal onClose={() => setShowSettings(false)} />
-        )}
+        {showSettings && <SettingsModal onClose={() => setShowSettings(false)} />}
       </>
     )
   }
 
   return (
-    <div className="h-full w-full flex flex-col bg-surface">
-      <header className="h-11 flex items-center justify-between px-4 border-b border-border-light bg-surface shrink-0">
-        <div className="flex items-center gap-2 min-w-0">
-          <button
-            onClick={() => setShowHistory(true)}
-            className="group relative text-text-tertiary hover:text-text-secondary p-1 rounded hover:bg-surface-tertiary transition-colors shrink-0"
-          >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M3 12h18M3 6h18M3 18h18" />
-            </svg>
-            <span className="pointer-events-none absolute top-full left-1/2 -translate-x-1/2 mt-1 whitespace-nowrap rounded bg-text-primary px-2 py-0.5 text-xs text-surface opacity-0 group-hover:opacity-100 transition-opacity z-10">
-              Papers
-            </span>
-          </button>
-          <button
-            onClick={handleNewPaper}
-            className="group relative flex items-center gap-1 px-2 py-0.5 text-xs text-text-secondary rounded-md border border-border bg-surface hover:bg-surface-secondary shadow-sm hover:shadow transition-all shrink-0"
-          >
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-              <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
-            </svg>
-            New
-            <span className="pointer-events-none absolute top-full left-1/2 -translate-x-1/2 mt-1 whitespace-nowrap rounded bg-text-primary px-2 py-0.5 text-xs text-surface opacity-0 group-hover:opacity-100 transition-opacity z-10">
-              Upload new paper
-            </span>
-          </button>
-          <span className="text-sm font-medium text-text-primary truncate">
-            {file.name}
-          </span>
-          {file.status === 'parsing' && (
-            <span className="text-xs text-accent px-1.5 py-0.5 rounded bg-accent-light shrink-0">
-              Parsing...
-            </span>
-          )}
-        </div>
-        <div className="flex items-center gap-1">
-          <button
-            onClick={() => setShowSettings(true)}
-            className="group relative text-text-tertiary hover:text-text-secondary p-1 rounded hover:bg-surface-tertiary transition-colors"
-          >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <circle cx="12" cy="12" r="3"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>
-            </svg>
-            <span className="pointer-events-none absolute top-full right-0 mt-1 whitespace-nowrap rounded bg-text-primary px-2 py-0.5 text-xs text-surface opacity-0 group-hover:opacity-100 transition-opacity z-10">
-              Settings
-            </span>
-          </button>
+    <div className="workspace-shell flex h-full w-full flex-col overflow-hidden px-3 py-3 md:px-5 md:py-5">
+      <header className="workspace-header mb-3 rounded-[32px] border border-border bg-[rgba(255,251,244,0.86)] px-5 py-4 shadow-[0_20px_60px_rgba(36,30,20,0.08)] backdrop-blur md:px-6">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="rounded-full bg-surface-secondary px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-text-tertiary">
+                {file.status}
+              </span>
+              {file.pageCount ? (
+                <span className="rounded-full bg-surface-secondary px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-text-tertiary">
+                  {file.pageCount} Pages
+                </span>
+              ) : null}
+            </div>
+            <h1 className="mt-3 truncate font-display text-2xl text-text-primary md:text-4xl">
+              {file.name}
+            </h1>
+            {file.summary && (
+              <p className="mt-3 max-w-4xl text-sm leading-7 text-text-secondary md:text-base">
+                {file.summary}
+              </p>
+            )}
+            {file.keywords && file.keywords.length > 0 && (
+              <div className="mt-3 flex flex-wrap gap-2">
+                {file.keywords.map((keyword) => (
+                  <span
+                    key={keyword}
+                    className="rounded-full border border-border bg-surface px-3 py-1 text-xs text-text-secondary"
+                  >
+                    {keyword}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="flex shrink-0 flex-wrap gap-2">
+            <button
+              onClick={() => setShowHistory(true)}
+              className="rounded-full border border-border bg-surface px-4 py-2 text-sm text-text-secondary transition-colors hover:bg-surface-secondary"
+            >
+              文库历史
+            </button>
+            <button
+              onClick={handleNewPaper}
+              className="rounded-full border border-border bg-surface px-4 py-2 text-sm text-text-secondary transition-colors hover:bg-surface-secondary"
+            >
+              新建阅读
+            </button>
+            <button
+              onClick={() => setShowSettings(true)}
+              className="rounded-full bg-text-primary px-4 py-2 text-sm font-medium text-surface transition-colors hover:bg-[#30271e]"
+            >
+              模型设置
+            </button>
+          </div>
         </div>
       </header>
 
-      <div className="flex-1 min-h-0">
-        <PanelGroup direction="horizontal">
-          <Panel defaultSize={65} minSize={40}>
+      <div className="min-h-0 flex-1">
+        <PanelGroup direction={isCompact ? 'vertical' : 'horizontal'}>
+          <Panel defaultSize={isCompact ? 58 : 62} minSize={30}>
             <PDFViewer
               url={pdfUrl}
               annotations={annotations}
               onAnnotation={handleCreateAnnotation}
+              onTranslateSelection={handleTranslateSelection}
               scrollToPage={scrollToPage}
             />
           </Panel>
-          <PanelResizeHandle className="w-px bg-border-light hover:bg-accent transition-colors data-[resize-handle-active]:bg-accent" />
-          <Panel defaultSize={35} minSize={25}>
+
+          <PanelResizeHandle className={isCompact ? 'flex h-3 items-center justify-center' : 'flex w-3 items-center justify-center'}>
+            <div className={isCompact ? 'h-px w-16 rounded-full bg-border' : 'h-16 w-px rounded-full bg-border'} />
+          </PanelResizeHandle>
+
+          <Panel defaultSize={isCompact ? 42 : 38} minSize={25}>
             <ChatSidebar
               file={file}
               messages={messages}
@@ -377,7 +460,7 @@ function App() {
               isStreaming={isStreaming}
               annotations={annotations}
               onDeleteAnnotation={handleDeleteAnnotation}
-              onGoToPage={(page: number) => setScrollToPage(page)}
+              onGoToPage={(page) => setScrollToPage(page)}
             />
           </Panel>
         </PanelGroup>
@@ -390,9 +473,7 @@ function App() {
         currentPaperId={file.id}
       />
 
-      {showSettings && (
-        <SettingsModal onClose={() => setShowSettings(false)} />
-      )}
+      {showSettings && <SettingsModal onClose={() => setShowSettings(false)} />}
     </div>
   )
 }

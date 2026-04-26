@@ -1,3 +1,5 @@
+import type { AppSettings, LLMProvider, PaperSource } from './types'
+
 const API_BASE = '/api'
 
 export async function uploadPaper(file: File): Promise<{ id: string; filename: string; status: string }> {
@@ -8,7 +10,17 @@ export async function uploadPaper(file: File): Promise<{ id: string; filename: s
   return res.json()
 }
 
-export async function getPaperStatus(paperId: string): Promise<{ id: string; status: string; summary?: string; keywords?: string }> {
+export async function getPaperStatus(paperId: string): Promise<{
+  id: string
+  status: string
+  summary?: string
+  keywords?: string[]
+  page_count?: number
+  metadata?: {
+    stats?: Record<string, number>
+    summary_preview?: string
+  }
+}> {
   const res = await fetch(`${API_BASE}/papers/${paperId}/status`)
   if (!res.ok) throw new Error(`Status check failed: ${res.statusText}`)
   return res.json()
@@ -27,7 +39,7 @@ export async function createConversation(paperId: string): Promise<{ id: string;
 export interface StreamCallbacks {
   onRoute?: (route: string) => void
   onToken: (token: string) => void
-  onDone: (fullAnswer: string) => void
+  onDone: (fullAnswer: string, sources: PaperSource[]) => void
   onError?: (error: string) => void
 }
 
@@ -70,26 +82,22 @@ export function streamChat(
         buffer = lines.pop() || ''
 
         for (const line of lines) {
-          if (line.startsWith('event: ')) {
-            continue
-          }
-          if (line.startsWith('data: ')) {
-            const dataStr = line.slice(6)
-            try {
-              const data = JSON.parse(dataStr)
-              // Determine event type from the data content
-              if (data.route !== undefined) {
-                callbacks.onRoute?.(data.route)
-              } else if (data.content !== undefined) {
-                callbacks.onToken(data.content)
-              } else if (data.answer !== undefined) {
-                callbacks.onDone(data.answer)
-              } else if (data.error !== undefined) {
-                callbacks.onError?.(data.error)
-              }
-            } catch {
-              // Skip non-JSON lines
+          if (line.startsWith('event: ')) continue
+          if (!line.startsWith('data: ')) continue
+
+          try {
+            const data = JSON.parse(line.slice(6))
+            if (data.route !== undefined) {
+              callbacks.onRoute?.(data.route)
+            } else if (data.content !== undefined) {
+              callbacks.onToken(data.content)
+            } else if (data.answer !== undefined) {
+              callbacks.onDone(data.answer, data.sources || [])
+            } else if (data.error !== undefined) {
+              callbacks.onError?.(data.error)
             }
+          } catch {
+            // Ignore malformed SSE chunks.
           }
         }
       }
@@ -103,14 +111,30 @@ export function streamChat(
   return controller
 }
 
-export async function fetchPapers() {
+export async function fetchPapers(): Promise<Array<{
+  id: string
+  filename: string
+  status: string
+  summary?: string
+  created_at: string
+}>> {
   const res = await fetch(`${API_BASE}/papers`)
   if (!res.ok) throw new Error('Failed to fetch papers')
   return res.json()
 }
 
 export async function fetchPaperDetail(paperId: string): Promise<{
-  id: string; filename: string; status: string; conversations: Array<{ id: string; title?: string; created_at: string }>
+  id: string
+  filename: string
+  status: string
+  summary?: string
+  keywords?: string[]
+  page_count?: number
+  metadata?: {
+    stats?: Record<string, number>
+    summary_preview?: string
+  }
+  conversations: Array<{ id: string; title?: string; created_at: string }>
 }> {
   const res = await fetch(`${API_BASE}/papers/${paperId}`)
   if (!res.ok) throw new Error('Failed to fetch paper detail')
@@ -118,7 +142,11 @@ export async function fetchPaperDetail(paperId: string): Promise<{
 }
 
 export async function fetchMessages(conversationId: string): Promise<Array<{
-  id: string; role: string; content: string; created_at: string
+  id: string
+  role: string
+  content: string
+  metadata_json?: string
+  created_at: string
 }>> {
   const res = await fetch(`${API_BASE}/conversations/${conversationId}/messages`)
   if (!res.ok) throw new Error('Failed to fetch messages')
@@ -137,8 +165,12 @@ export async function fetchAnnotations(paperId: string) {
 }
 
 export async function createAnnotation(paperId: string, data: {
-  page_number: number; text_content: string; color: string;
-  start_offset?: number; end_offset?: number;
+  page_number: number
+  text_content: string
+  color: string
+  start_offset?: number
+  end_offset?: number
+  note?: string
 }) {
   const res = await fetch(`${API_BASE}/papers/${paperId}/annotations`, {
     method: 'POST',
@@ -156,9 +188,33 @@ export async function deleteAnnotation(paperId: string, annotationId: string) {
   if (!res.ok) throw new Error('Failed to delete annotation')
 }
 
-export async function getProviders(): Promise<{ providers: Array<{ id: string; name: string; default_base_url: string; models: string[] }> }> {
+export async function translateSelection(
+  paperId: string,
+  text: string,
+  targetLanguage = '简体中文',
+): Promise<string> {
+  const res = await fetch(`${API_BASE}/papers/${paperId}/selection/translate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      text,
+      target_language: targetLanguage,
+    }),
+  })
+  if (!res.ok) throw new Error('Failed to translate selection')
+  const data = await res.json()
+  return data.translation || ''
+}
+
+export async function getProviders(): Promise<{ providers: LLMProvider[] }> {
   const res = await fetch(`${API_BASE}/settings/providers`)
   if (!res.ok) throw new Error('Failed to get providers')
+  return res.json()
+}
+
+export async function getSettings(): Promise<AppSettings> {
+  const res = await fetch(`${API_BASE}/settings`)
+  if (!res.ok) throw new Error('Failed to get settings')
   return res.json()
 }
 

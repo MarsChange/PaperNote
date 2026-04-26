@@ -13,8 +13,9 @@ langchain-community==0.3.14
 langgraph==0.2.60
 
 # Embedding & Vector Store
-chromadb==0.5.23
 openai==1.58.1
+pymilvus[milvus_lite]==2.6.12
+setuptools<81
 
 # Database
 aiosqlite==0.20.0

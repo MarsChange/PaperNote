@@ -1,5 +1,7 @@
 """Router Agent — classifies user intent."""
 
+import re
+
 from langchain_core.messages import SystemMessage, HumanMessage
 
 from app.agents.state import AgentState
@@ -14,25 +16,44 @@ Given the user's message, classify it into one of these categories:
 
 Respond with ONLY one word: rag, summarize, or chat."""
 
+SUMMARY_PATTERNS = (
+    r"\bsummary\b",
+    r"\boverview\b",
+    r"\bkey contributions?\b",
+    r"\bsummarize\b",
+    r"总结",
+    r"概述",
+    r"摘要",
+    r"主要贡献",
+)
+
+
+def _fallback_route(question: str) -> str:
+    normalized = question.strip().lower()
+    if any(re.search(pattern, normalized) for pattern in SUMMARY_PATTERNS):
+        return "summarize"
+    return "rag"
+
 
 async def router_node(state: AgentState) -> dict:
     """Classify user intent."""
-    llm = get_llm(temperature=0)
-    response = await llm.ainvoke([
-        SystemMessage(content=ROUTER_PROMPT),
-        HumanMessage(content=f"User message: {state['question']}"),
-    ])
+    try:
+        llm = get_llm(temperature=0)
+        response = await llm.ainvoke([
+            SystemMessage(content=ROUTER_PROMPT),
+            HumanMessage(content=f"User message: {state['question']}"),
+        ])
 
-    route_text = response.content.strip().lower()
-    # Normalize
-    if "rag" in route_text:
-        route = "rag"
-    elif "summar" in route_text:
-        route = "summarize"
-    else:
-        route = "chat"
-
-    return {"route": route}
+        route_text = response.content.strip().lower()
+        if "rag" in route_text:
+            route = "rag"
+        elif "summar" in route_text:
+            route = "summarize"
+        else:
+            route = "chat"
+        return {"route": route}
+    except Exception:
+        return {"route": _fallback_route(state["question"])}
 
 
 def route_decision(state: AgentState) -> str:

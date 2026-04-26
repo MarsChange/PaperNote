@@ -1,6 +1,8 @@
+from __future__ import annotations
+
 """LangGraph state definition for the multi-agent RAG pipeline."""
 
-from typing import Annotated, Literal
+from typing import Annotated, Literal, Optional
 from typing_extensions import TypedDict
 from langgraph.graph.message import add_messages
 from langchain_core.messages import BaseMessage
@@ -19,10 +21,13 @@ class AgentState(TypedDict):
     paper_id: str
 
     # Router decision
-    route: Literal["rag", "chat", "summarize"] | None
+    route: Optional[Literal["rag", "chat", "summarize"]]
 
-    # Retrieved chunks from vector store
-    context: list[str]
+    # Retrieved evidence blocks from hybrid retriever
+    context: list[dict]
 
     # Final answer
     answer: str
+
+    # Evidence passed back to the client
+    sources: list[dict]

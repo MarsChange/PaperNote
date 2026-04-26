@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useEffect } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Document, Page, pdfjs } from 'react-pdf'
 import 'react-pdf/dist/Page/AnnotationLayer.css'
 import 'react-pdf/dist/Page/TextLayer.css'
@@ -7,7 +7,6 @@ import type { Annotation } from '../../types'
 
 pdfjs.GlobalWorkerOptions.workerSrc = `//unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`
 
-// Normalize whitespace: collapse runs of whitespace (including newlines) into single spaces, then trim
 function normalizeText(text: string): string {
   return text.replace(/\s+/g, ' ').trim()
 }
@@ -15,24 +14,31 @@ function normalizeText(text: string): string {
 interface PDFViewerProps {
   url: string
   annotations?: Annotation[]
-  onAnnotation?: (color: string, text: string, pageNumber: number) => void
+  onAnnotation?: (color: string, text: string, pageNumber: number, note?: string) => void
+  onTranslateSelection?: (text: string, pageNumber: number) => Promise<string>
   scrollToPage?: number
 }
 
-export default function PDFViewer({ url, annotations = [], onAnnotation, scrollToPage }: PDFViewerProps) {
+export default function PDFViewer({
+  url,
+  annotations = [],
+  onAnnotation,
+  onTranslateSelection,
+  scrollToPage,
+}: PDFViewerProps) {
   const [numPages, setNumPages] = useState<number>(0)
-  const [scale, setScale] = useState(1.2)
+  const [scale, setScale] = useState(1.15)
   const [popover, setPopover] = useState<{
     x: number
     y: number
     text: string
     pageNumber: number
   } | null>(null)
+
   const containerRef = useRef<HTMLDivElement>(null)
   const pageRefs = useRef<Map<number, HTMLDivElement>>(new Map())
   const renderedPages = useRef<Set<number>>(new Set())
 
-  // Apply annotation highlights to rendered PDF text layer spans
   const applyHighlights = useCallback((pageNumber: number) => {
     const pageEl = pageRefs.current.get(pageNumber)
     if (!pageEl) return
@@ -43,70 +49,62 @@ export default function PDFViewer({ url, annotations = [], onAnnotation, scrollT
     const spans = textLayer.querySelectorAll('span')
     const pageAnnotations = annotations.filter(a => a.page_number === pageNumber)
 
-    // Clear previous highlights
     spans.forEach(span => {
       span.style.backgroundColor = ''
+      span.style.borderRadius = ''
+      span.style.boxShadow = ''
     })
 
     if (pageAnnotations.length === 0) return
 
-    // Build raw span ranges — concatenate without separator to preserve exact character positions
     const spanRanges: Array<{ span: HTMLSpanElement; start: number; end: number }> = []
     let offset = 0
-    spans.forEach(span => {
+    spans.forEach((span) => {
       const text = span.textContent || ''
       if (text.length > 0) {
         spanRanges.push({ span, start: offset, end: offset + text.length })
         offset += text.length
       }
     })
-    const fullText = spanRanges.map(r => r.span.textContent || '').join('')
 
-    // Build whitespace-stripped version + mapping back to raw positions
-    const strippedChars: number[] = [] // strippedChars[strippedIdx] = rawIdx
-    for (let i = 0; i < fullText.length; i++) {
-      if (!/\s/.test(fullText[i])) {
-        strippedChars.push(i)
-      }
+    const fullText = spanRanges.map(range => range.span.textContent || '').join('')
+    const strippedChars: number[] = []
+    for (let i = 0; i < fullText.length; i += 1) {
+      if (!/\s/.test(fullText[i])) strippedChars.push(i)
     }
     const fullStripped = strippedChars.map(i => fullText[i]).join('')
 
-    // Apply highlights for each annotation
     for (const ann of pageAnnotations) {
       const searchStripped = ann.text_content.replace(/\s/g, '')
       if (!searchStripped) continue
 
-      // Convert hex color to rgba with 0.3 opacity
       const hex = ann.color.replace('#', '')
-      const r = parseInt(hex.substring(0, 2), 16)
-      const g = parseInt(hex.substring(2, 4), 16)
-      const b = parseInt(hex.substring(4, 6), 16)
-      const bgColor = `rgba(${r}, ${g}, ${b}, 0.3)`
+      const r = Number.parseInt(hex.substring(0, 2), 16)
+      const g = Number.parseInt(hex.substring(2, 4), 16)
+      const b = Number.parseInt(hex.substring(4, 6), 16)
+      const bgColor = `rgba(${r}, ${g}, ${b}, 0.34)`
 
-      // Find match in stripped text, then map back to raw positions
       const strippedIdx = fullStripped.indexOf(searchStripped)
       if (strippedIdx === -1) continue
+
       const strippedEnd = strippedIdx + searchStripped.length
-
       const rawStart = strippedChars[strippedIdx]
-      const rawEnd = strippedEnd < strippedChars.length
-        ? strippedChars[strippedEnd]
-        : fullText.length
+      const rawEnd = strippedEnd < strippedChars.length ? strippedChars[strippedEnd] : fullText.length
 
-      // Highlight only the spans that overlap with this exact match range
       for (const { span, start, end } of spanRanges) {
         if (end > rawStart && start < rawEnd) {
           span.style.backgroundColor = bgColor
+          span.style.borderRadius = '6px'
+          if (ann.note) {
+            span.style.boxShadow = 'inset 0 -1px 0 rgba(31, 27, 22, 0.15)'
+          }
         }
       }
     }
   }, [annotations])
 
-  // Re-apply highlights when annotations change
   useEffect(() => {
-    renderedPages.current.forEach(pageNum => {
-      applyHighlights(pageNum)
-    })
+    renderedPages.current.forEach(pageNum => applyHighlights(pageNum))
   }, [annotations, applyHighlights])
 
   const handlePageRenderSuccess = useCallback((pageNumber: number) => {
@@ -114,17 +112,13 @@ export default function PDFViewer({ url, annotations = [], onAnnotation, scrollT
     applyHighlights(pageNumber)
   }, [applyHighlights])
 
-  // Detect text selection inside PDF pages
   const handleMouseUp = useCallback(() => {
     const selection = window.getSelection()
-    if (!selection || selection.isCollapsed || !selection.toString().trim()) {
-      return
-    }
+    if (!selection || selection.isCollapsed || !selection.toString().trim()) return
 
     const text = normalizeText(selection.toString())
     if (!text) return
 
-    // Find which page the selection is in
     const anchorNode = selection.anchorNode
     if (!anchorNode) return
 
@@ -136,143 +130,152 @@ export default function PDFViewer({ url, annotations = [], onAnnotation, scrollT
     while (pageElement) {
       const dataPage = pageElement.getAttribute('data-page-number')
       if (dataPage) {
-        pageNumber = parseInt(dataPage, 10)
+        pageNumber = Number.parseInt(dataPage, 10)
         break
       }
       pageElement = pageElement.parentElement
     }
 
-    if (pageNumber === 0) return
+    if (!pageNumber) return
 
-    // Get position for popover
-    const range = selection.getRangeAt(0)
-    const rect = range.getBoundingClientRect()
+    const rect = selection.getRangeAt(0).getBoundingClientRect()
+    const width = 320
+    const x = Math.max(16, Math.min(window.innerWidth - width - 16, rect.left + rect.width / 2 - width / 2))
+    const y = Math.max(16, rect.top - 20)
 
     setPopover({
-      x: rect.left + rect.width / 2 - 75,
-      y: rect.top - 45,
+      x,
+      y,
       text,
       pageNumber,
     })
   }, [])
 
-  const handleHighlight = useCallback((color: string, text: string, pageNumber: number) => {
-    onAnnotation?.(color, text, pageNumber)
+  const handleAnnotation = useCallback((color: string, text: string, pageNumber: number, note?: string) => {
+    onAnnotation?.(color, text, pageNumber, note)
     setPopover(null)
     window.getSelection()?.removeAllRanges()
   }, [onAnnotation])
 
-  const dismissPopover = useCallback(() => {
-    setPopover(null)
-  }, [])
-
-  // Ctrl+scroll / pinch-to-zoom
   useEffect(() => {
     const el = containerRef.current
     if (!el) return
+
     const handleWheel = (e: WheelEvent) => {
       if (e.ctrlKey || e.metaKey) {
         e.preventDefault()
         const delta = e.deltaY > 0 ? -0.05 : 0.05
-        setScale(s => Math.min(3, Math.max(0.5, s + delta)))
+        setScale(prev => Math.min(2.6, Math.max(0.65, prev + delta)))
       }
     }
+
     el.addEventListener('wheel', handleWheel, { passive: false })
     return () => el.removeEventListener('wheel', handleWheel)
   }, [])
 
-  // Scroll to a specific page
   const scrollTo = useCallback((page: number) => {
     const el = pageRefs.current.get(page)
-    if (el) {
-      el.scrollIntoView({ behavior: 'smooth', block: 'start' })
-    }
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' })
   }, [])
 
-  // Handle scrollToPage prop changes
-  if (scrollToPage && scrollToPage > 0) {
-    // Use requestAnimationFrame to avoid calling during render
-    requestAnimationFrame(() => scrollTo(scrollToPage))
-  }
+  useEffect(() => {
+    if (!scrollToPage || scrollToPage <= 0) return
+    const raf = requestAnimationFrame(() => scrollTo(scrollToPage))
+    return () => cancelAnimationFrame(raf)
+  }, [scrollToPage, scrollTo])
 
   return (
-    <div className="h-full flex flex-col bg-surface-secondary">
-      {/* Toolbar */}
-      <div className="h-10 flex items-center justify-center gap-3 border-b border-border-light bg-surface px-3 shrink-0">
-        <button
-          onClick={() => setScale(s => Math.max(0.5, s - 0.1))}
-          className="text-text-secondary hover:text-text-primary p-1 rounded hover:bg-surface-tertiary transition-colors text-sm"
-        >
-          −
-        </button>
-        <span className="text-xs text-text-secondary w-12 text-center">
-          {Math.round(scale * 100)}%
-        </span>
-        <button
-          onClick={() => setScale(s => Math.min(3, s + 0.1))}
-          className="text-text-secondary hover:text-text-primary p-1 rounded hover:bg-surface-tertiary transition-colors text-sm"
-        >
-          +
-        </button>
-        <span className="text-xs text-text-tertiary mx-2">|</span>
-        <span className="text-xs text-text-tertiary">
-          {numPages > 0 ? `${numPages} pages` : ''}
-        </span>
-      </div>
-
-      {/* PDF content */}
-      <div
-        ref={containerRef}
-        className="flex-1 overflow-auto flex justify-center py-4"
-        onMouseUp={handleMouseUp}
-      >
-        <Document
-          file={url}
-          onLoadSuccess={({ numPages: n }) => setNumPages(n)}
-          loading={
-            <div className="flex items-center justify-center h-full">
-              <p className="text-sm text-text-tertiary">Loading PDF...</p>
-            </div>
-          }
-          error={
-            <div className="flex items-center justify-center h-full">
-              <p className="text-sm text-red-500">Failed to load PDF</p>
-            </div>
-          }
-        >
-          <div className="flex flex-col items-center gap-4">
-            {Array.from({ length: numPages }, (_, i) => (
-              <div
-                key={i + 1}
-                ref={(el) => {
-                  if (el) pageRefs.current.set(i + 1, el)
-                }}
-              >
-                <Page
-                  pageNumber={i + 1}
-                  scale={scale}
-                  className="shadow-sm"
-                  renderTextLayer={true}
-                  renderAnnotationLayer={true}
-                  onRenderSuccess={() => handlePageRenderSuccess(i + 1)}
-                />
-              </div>
-            ))}
+    <div className="h-full rounded-[28px] border border-border bg-surface shadow-[0_12px_40px_rgba(36,30,20,0.08)]">
+      <div className="flex h-full flex-col overflow-hidden rounded-[28px]">
+        <div className="flex h-14 items-center justify-between border-b border-border bg-[rgba(255,252,245,0.92)] px-4 backdrop-blur">
+          <div>
+            <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-text-tertiary">
+              Reading Desk
+            </p>
+            <p className="text-sm text-text-secondary">
+              选中文本后可自动翻译、高亮和做笔记
+            </p>
           </div>
-        </Document>
-      </div>
 
-      {/* Annotation color popover */}
-      {popover && (
-        <AnnotationPopover
-          x={popover.x}
-          y={popover.y}
-          selectedText={popover.text}
-          pageNumber={popover.pageNumber}
-          onHighlight={handleHighlight}
-          onDismiss={dismissPopover}
-        />
-      )}
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setScale(prev => Math.max(0.65, prev - 0.1))}
+              className="rounded-full border border-border bg-surface-secondary px-3 py-1.5 text-sm text-text-secondary transition-colors hover:bg-surface-tertiary"
+            >
+              缩小
+            </button>
+            <span className="w-16 text-center text-sm text-text-primary">
+              {Math.round(scale * 100)}%
+            </span>
+            <button
+              onClick={() => setScale(prev => Math.min(2.6, prev + 0.1))}
+              className="rounded-full border border-border bg-surface-secondary px-3 py-1.5 text-sm text-text-secondary transition-colors hover:bg-surface-tertiary"
+            >
+              放大
+            </button>
+            <span className="rounded-full bg-surface-secondary px-3 py-1.5 text-xs text-text-secondary">
+              {numPages > 0 ? `${numPages} 页` : '加载中'}
+            </span>
+          </div>
+        </div>
+
+        <div
+          ref={containerRef}
+          className="reader-canvas flex-1 overflow-auto px-4 py-5 md:px-8"
+          onMouseUp={handleMouseUp}
+        >
+          <Document
+            file={url}
+            onLoadSuccess={({ numPages: totalPages }) => setNumPages(totalPages)}
+            loading={
+              <div className="flex h-full items-center justify-center">
+                <p className="text-sm text-text-tertiary">正在加载论文 PDF...</p>
+              </div>
+            }
+            error={
+              <div className="flex h-full items-center justify-center">
+                <p className="text-sm text-[#b1462f]">PDF 加载失败</p>
+              </div>
+            }
+          >
+            <div className="mx-auto flex max-w-[940px] flex-col items-center gap-6">
+              {Array.from({ length: numPages }, (_, index) => (
+                <div
+                  key={index + 1}
+                  ref={(el) => {
+                    if (el) pageRefs.current.set(index + 1, el)
+                  }}
+                  className="relative"
+                >
+                  <div className="absolute -left-12 top-3 hidden rounded-full bg-surface px-3 py-1 text-xs text-text-tertiary shadow-sm md:block">
+                    {index + 1}
+                  </div>
+                  <Page
+                    pageNumber={index + 1}
+                    scale={scale}
+                    className="paper-sheet overflow-hidden rounded-[18px] shadow-[0_18px_48px_rgba(47,36,24,0.12)]"
+                    renderTextLayer
+                    renderAnnotationLayer
+                    onRenderSuccess={() => handlePageRenderSuccess(index + 1)}
+                  />
+                </div>
+              ))}
+            </div>
+          </Document>
+        </div>
+
+        {popover && (
+          <AnnotationPopover
+            x={popover.x}
+            y={popover.y}
+            selectedText={popover.text}
+            pageNumber={popover.pageNumber}
+            onHighlight={handleAnnotation}
+            onTranslate={onTranslateSelection}
+            onDismiss={() => setPopover(null)}
+          />
+        )}
+      </div>
     </div>
   )
 }

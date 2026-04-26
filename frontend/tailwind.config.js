@@ -1,35 +1,36 @@
 /** @type {import('tailwindcss').Config} */
 export default {
   content: [
-    "./index.html",
-    "./src/**/*.{js,ts,jsx,tsx}",
+    './index.html',
+    './src/**/*.{js,ts,jsx,tsx}',
   ],
   theme: {
     extend: {
       colors: {
         surface: {
-          DEFAULT: '#ffffff',
-          secondary: '#f7f7f5',
-          tertiary: '#f0f0ee',
+          DEFAULT: '#fffdf8',
+          secondary: '#f5eee2',
+          tertiary: '#ece1d0',
         },
         border: {
-          DEFAULT: '#e5e5e3',
-          light: '#ebebea',
+          DEFAULT: '#decfb8',
+          light: '#eadfce',
         },
         text: {
-          primary: '#1a1a1a',
-          secondary: '#6b6b6b',
-          tertiary: '#9b9b9b',
+          primary: '#241e18',
+          secondary: '#5e5548',
+          tertiary: '#8d816f',
         },
         accent: {
-          DEFAULT: '#2563eb',
-          hover: '#1d4ed8',
-          light: '#eff6ff',
-        }
+          DEFAULT: '#0f766e',
+          hover: '#0a5d57',
+          light: '#d8f1ee',
+        },
       },
       fontFamily: {
-        sans: ['-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'Roboto', 'sans-serif'],
-        mono: ['JetBrains Mono', 'Fira Code', 'monospace'],
+        sans: ['"Avenir Next"', '"PingFang SC"', '"Noto Sans SC"', '"Segoe UI"', 'sans-serif'],
+        display: ['"Iowan Old Style"', '"Palatino Linotype"', 'Georgia', 'serif'],
+        mono: ['"JetBrains Mono"', '"Fira Code"', 'monospace'],
       },
     },
   },

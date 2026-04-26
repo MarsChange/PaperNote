@@ -13,7 +13,7 @@ PROVIDERS = [
         "id": "openai",
         "name": "OpenAI",
         "default_base_url": "https://api.openai.com/v1",
-        "models": ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo"],
+        "models": ["gpt-5.5", "gpt-5.4", "gpt-5.3"],
     },
     {
         "id": "anthropic",
@@ -25,19 +25,13 @@ PROVIDERS = [
         "id": "qwen",
         "name": "Qwen",
         "default_base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-        "models": ["qwen-max", "qwen-plus", "qwen-turbo"],
+        "models": ["qwen3.6-plus", "qwen3.6-flash"],
     },
     {
         "id": "kimi",
         "name": "Kimi",
         "default_base_url": "https://api.moonshot.cn/v1",
-        "models": ["moonshot-v1-128k", "moonshot-v1-32k", "moonshot-v1-8k"],
-    },
-    {
-        "id": "minimax",
-        "name": "MiniMax",
-        "default_base_url": "https://api.minimax.chat/v1",
-        "models": ["abab6.5s-chat", "abab5.5-chat"],
+        "models": ["kimi-k2.6", "kimi-k2.5"],
     },
     {
         "id": "gemini",
@@ -64,7 +58,11 @@ async def get_providers():
 async def get_settings():
     return {
         "llm_provider": settings.llm_provider,
+        "llm_model": settings.llm_model,
+        "embedding_provider": settings.embedding_provider,
         "embedding_model": settings.embedding_model,
+        "milvus_uri": settings.milvus_uri,
+        "milvus_collection": settings.milvus_collection,
     }
 
 
@@ -73,6 +71,8 @@ async def update_settings(req: UpdateSettingsRequest):
     """Update runtime settings (in-memory only, not persisted to .env)."""
     if req.llm_provider:
         settings.llm_provider = req.llm_provider
+    if req.model:
+        settings.llm_model = req.model
     if req.api_key:
         # Set the appropriate API key based on provider
         provider = req.llm_provider or settings.llm_provider
@@ -81,7 +81,6 @@ async def update_settings(req: UpdateSettingsRequest):
             "anthropic": "anthropic_api_key",
             "qwen": "qwen_api_key",
             "kimi": "kimi_api_key",
-            "minimax": "minimax_api_key",
             "gemini": "gemini_api_key",
         }
         attr = key_map.get(provider)
@@ -93,11 +92,14 @@ async def update_settings(req: UpdateSettingsRequest):
             "openai": "openai_base_url",
             "qwen": "qwen_base_url",
             "kimi": "kimi_base_url",
-            "minimax": "minimax_base_url",
             "gemini": "gemini_base_url",
         }
         attr = url_map.get(provider)
         if attr:
             setattr(settings, attr, req.base_url)
 
-    return {"status": "ok"}
+    return {
+        "status": "ok",
+        "llm_provider": settings.llm_provider,
+        "llm_model": settings.llm_model,
+    }

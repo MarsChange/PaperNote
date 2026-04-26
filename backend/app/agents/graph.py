@@ -4,7 +4,7 @@ from langgraph.graph import StateGraph, END
 
 from app.agents.state import AgentState
 from app.agents.router import router_node, route_decision
-from app.agents.retriever import retriever_node
+from app.agents.retriever import retriever_node, retriever_summary_node
 from app.agents.generator import answer_rag_node, answer_chat_node, answer_summarize_node
 
 
@@ -37,7 +37,7 @@ def build_graph() -> StateGraph:
     graph.add_node("retriever", retriever_node)
     graph.add_node("answer_rag", answer_rag_node)
     graph.add_node("answer_chat", answer_chat_node)
-    graph.add_node("retriever_summarize", retriever_node)
+    graph.add_node("retriever_summarize", retriever_summary_node)
     graph.add_node("answer_summarize", answer_summarize_node)
 
     # Entry point
