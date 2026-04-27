@@ -8,7 +8,7 @@ from langgraph.graph.message import add_messages
 from langchain_core.messages import BaseMessage
 
 
-class AgentState(TypedDict):
+class AgentState(TypedDict, total=False):
     """State that flows through the LangGraph pipeline."""
 
     # Core conversation
@@ -25,6 +25,16 @@ class AgentState(TypedDict):
 
     # Retrieved evidence blocks from hybrid retriever
     context: list[dict]
+
+    # Agentic RAG loop data
+    docs: list[dict]
+    rag_trace: dict
+    rewrite_count: int
+    expansion_type: Optional[str]
+    expanded_query: Optional[str]
+    step_back_question: Optional[str]
+    step_back_answer: Optional[str]
+    hypothetical_doc: Optional[str]
 
     # Final answer
     answer: str

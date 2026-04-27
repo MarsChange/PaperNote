@@ -165,8 +165,22 @@ def test_semantic_text_accepts_legacy_list_entity():
     assert "Keywords: battery" in semantic_text
 
 
+def test_llm_budget_prioritizes_images_before_tables_and_equations():
+    blocks = [
+        {"id": "table-1", "type": "table", "order": 1},
+        {"id": "equation-1", "type": "equation", "order": 2},
+        {"id": "image-1", "type": "image", "order": 3},
+        {"id": "image-2", "type": "image", "order": 4},
+    ]
+
+    selected = MultimodalEnricher()._llm_priority_block_ids(blocks, llm_budget=2)
+
+    assert selected == {"image-1", "image-2"}
+
+
 if __name__ == "__main__":
     test_heuristic_multimodal_enrichment_without_llm_key()
     test_llm_payload_normalizes_list_entity()
     test_semantic_text_accepts_legacy_list_entity()
+    test_llm_budget_prioritizes_images_before_tables_and_equations()
     print(f"{Path(__file__).name}: ok")

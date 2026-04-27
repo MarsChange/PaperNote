@@ -3,12 +3,12 @@ import ReactMarkdown from 'react-markdown'
 import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
 import AnnotationsPanel from './AnnotationsPanel'
-import type { Annotation, ChatMessage, PaperFile, PaperSource } from '../../types'
+import type { Annotation, ChatMessage, PaperFile, PaperSource, RagStep } from '../../types'
 
 interface ChatSidebarProps {
   file: PaperFile
   messages: ChatMessage[]
-  onSendMessage: (content: string) => void
+  onSendMessage: (content: string) => boolean | void
   onQuickAction?: (label: string, prompt: string) => void
   isStreaming?: boolean
   annotations: Annotation[]
@@ -58,6 +58,28 @@ function SourceCard({ source, onGoToPage }: { source: PaperSource; onGoToPage: (
   )
 }
 
+function RagSteps({ steps }: { steps: RagStep[] }) {
+  if (!steps.length) return null
+  return (
+    <div className="rounded-[20px] border border-border bg-surface px-3 py-3">
+      <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-text-tertiary">
+        Agentic RAG
+      </div>
+      <div className="space-y-2">
+        {steps.slice(-6).map((step, index) => (
+          <div key={`${step.label}-${index}`} className="flex gap-2 text-xs leading-5 text-text-secondary">
+            <span className="mt-0.5 shrink-0">{step.icon}</span>
+            <div>
+              <div className="font-medium text-text-primary">{step.label}</div>
+              {step.detail && <div>{step.detail}</div>}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 export default function ChatSidebar({
   file,
   messages,
@@ -78,8 +100,9 @@ export default function ChatSidebar({
 
   const submitInput = () => {
     const trimmed = input.trim()
-    if (!trimmed) return
-    onSendMessage(trimmed)
+    if (!trimmed || isStreaming) return
+    const sent = onSendMessage(trimmed)
+    if (sent === false) return
     setInput('')
   }
 
@@ -88,54 +111,13 @@ export default function ChatSidebar({
     submitInput()
   }
 
-  const stats = file.metadata?.stats || {}
-  const summary = file.summary || file.metadata?.summary_preview
-
   return (
     <div className="h-full rounded-[28px] border border-border bg-surface shadow-[0_12px_40px_rgba(36,30,20,0.08)]">
       <div className="flex h-full flex-col overflow-hidden rounded-[28px]">
         <div className="border-b border-border bg-[rgba(255,252,245,0.92)] px-4 py-4 backdrop-blur">
-          <div className="flex items-start justify-between gap-4">
-            <div className="min-w-0">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-text-tertiary">
-                AI Workspace
-              </p>
-              <h2 className="mt-1 text-lg font-semibold text-text-primary">
-                论文问答与阅读笔记
-              </h2>
-              {summary && (
-                <p className="mt-2 text-sm leading-6 text-text-secondary">
-                  {summary}
-                </p>
-              )}
-            </div>
-
-            <div className="grid shrink-0 grid-cols-2 gap-2 text-right">
-              {Object.entries(stats).filter(([, value]) => value > 0).slice(0, 4).map(([key, value]) => (
-                <div key={key} className="rounded-2xl bg-surface-secondary px-3 py-2">
-                  <div className="text-[11px] uppercase tracking-[0.18em] text-text-tertiary">
-                    {key}
-                  </div>
-                  <div className="text-sm font-semibold text-text-primary">
-                    {value}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {file.keywords && file.keywords.length > 0 && (
-            <div className="mt-3 flex flex-wrap gap-2">
-              {file.keywords.map((keyword) => (
-                <span
-                  key={keyword}
-                  className="rounded-full border border-border bg-surface px-3 py-1 text-xs text-text-secondary"
-                >
-                  {keyword}
-                </span>
-              ))}
-            </div>
-          )}
+          <h2 className="text-lg font-semibold text-text-primary">
+            论文问答与阅读笔记
+          </h2>
 
           <div className="mt-4 flex gap-2 rounded-full bg-surface-secondary p-1">
             <button
@@ -223,6 +205,10 @@ export default function ChatSidebar({
                         </div>
                       ) : (
                         msg.content
+                      )}
+
+                      {msg.role === 'assistant' && msg.ragSteps && msg.ragSteps.length > 0 && (
+                        <RagSteps steps={msg.ragSteps} />
                       )}
 
                       {msg.role === 'assistant' && msg.sources && msg.sources.length > 0 && (

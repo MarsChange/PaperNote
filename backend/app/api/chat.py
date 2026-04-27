@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import uuid
+import asyncio
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
@@ -13,10 +14,25 @@ from langchain_core.messages import AIMessage, HumanMessage
 
 from app.agents.graph import rag_graph
 from app.core.database import get_db
+from app.services.agentic_runtime import set_rag_step_queue
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["chat"])
+
+
+def _chunk_text(content) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict) and item.get("type") == "text":
+                parts.append(str(item.get("text", "")))
+        return "".join(parts)
+    return str(content or "")
 
 
 class CreateConversationRequest(BaseModel):
@@ -114,6 +130,7 @@ async def _save_assistant_message(
     conversation_id: str,
     answer: str,
     sources: list[dict],
+    rag_trace: dict | None = None,
 ):
     db = await get_db()
     try:
@@ -125,7 +142,10 @@ async def _save_assistant_message(
                 assistant_msg_id,
                 conversation_id,
                 answer,
-                json.dumps({"sources": sources}, ensure_ascii=False),
+                json.dumps(
+                    {"sources": sources, "rag_trace": rag_trace or {}},
+                    ensure_ascii=False,
+                ),
             ),
         )
         await db.commit()
@@ -151,62 +171,137 @@ async def chat_stream(req: SendMessageRequest, request: Request):
     async def event_generator():
         full_answer = ""
         final_sources: list[dict] = []
+        final_trace: dict = {}
+        output_queue: asyncio.Queue = asyncio.Queue()
+
+        class _RagStepProxy:
+            def put_nowait(self, step):
+                output_queue.put_nowait({"event": "rag_step", "data": {"rag_step": step}})
+
+        set_rag_step_queue(_RagStepProxy())
+
+        state = {
+            "messages": history,
+            "question": req.content,
+            "paper_id": req.paper_id,
+            "route": None,
+            "context": [],
+            "docs": [],
+            "rag_trace": {},
+            "rewrite_count": 0,
+            "answer": "",
+            "sources": [],
+        }
+
+        async def _graph_worker():
+            nonlocal full_answer, final_sources, final_trace
+            try:
+                async for event in rag_graph.astream_events(state, version="v2"):
+                    kind = event.get("event", "")
+
+                    if kind == "on_chain_end" and event.get("name") == "router":
+                        route = event.get("data", {}).get("output", {}).get("route", "")
+                        if route:
+                            await output_queue.put(
+                                {"event": "route", "data": {"route": route}}
+                            )
+
+                    if kind == "on_chain_end" and event.get("name") in {
+                        "answer_agentic",
+                        "answer_chat",
+                        "answer_summary_agentic",
+                    }:
+                        output = event.get("data", {}).get("output", {})
+                        if isinstance(output, dict):
+                            final_sources = output.get("sources", []) or []
+                            final_trace = output.get("rag_trace", {}) or final_trace
+
+                    if kind == "on_chain_end" and event.get("name") in {
+                        "retrieve_initial",
+                        "retrieve_expanded",
+                        "retrieve_summary",
+                        "grade_documents",
+                        "rewrite_question",
+                    }:
+                        output = event.get("data", {}).get("output", {})
+                        if isinstance(output, dict) and output.get("rag_trace"):
+                            final_trace = output["rag_trace"]
+
+                    if kind == "on_chat_model_stream":
+                        node = event.get("metadata", {}).get("langgraph_node", "")
+                        if node not in {"answer_agentic", "answer_chat", "answer_summary_agentic"}:
+                            continue
+
+                        chunk = event.get("data", {}).get("chunk")
+                        if chunk and getattr(chunk, "content", None):
+                            text = _chunk_text(chunk.content)
+                            if not text:
+                                continue
+                            full_answer += text
+                            await output_queue.put(
+                                {"event": "token", "data": {"content": text}}
+                            )
+            except Exception as exc:
+                logger.error("Stream worker error: %s", exc)
+                await output_queue.put(
+                    {"event": "error", "data": {"error": "An internal error occurred"}}
+                )
+            finally:
+                await output_queue.put(None)
+
+        graph_task = asyncio.create_task(_graph_worker())
 
         try:
-            state = {
-                "messages": history,
-                "question": req.content,
-                "paper_id": req.paper_id,
-                "route": None,
-                "context": [],
-                "answer": "",
-                "sources": [],
-            }
-
-            async for event in rag_graph.astream_events(state, version="v2"):
-                kind = event.get("event", "")
-
-                if kind == "on_chain_end" and event.get("name") == "router":
-                    route = event.get("data", {}).get("output", {}).get("route", "")
-                    if route:
-                        yield {"event": "route", "data": json.dumps({"route": route})}
-
-                if kind == "on_chain_end" and event.get("name") in {
-                    "answer_rag",
-                    "answer_chat",
-                    "answer_summarize",
-                }:
-                    output = event.get("data", {}).get("output", {})
-                    if isinstance(output, dict):
-                        final_sources = output.get("sources", []) or []
-
-                if kind == "on_chat_model_stream":
-                    node = event.get("metadata", {}).get("langgraph_node", "")
-                    if node not in {"answer_rag", "answer_chat", "answer_summarize"}:
-                        continue
-
-                    chunk = event.get("data", {}).get("chunk")
-                    if chunk and getattr(chunk, "content", None):
-                        full_answer += chunk.content
-                        yield {
-                            "event": "token",
-                            "data": json.dumps({"content": chunk.content}),
-                        }
-
+            while True:
+                item = await output_queue.get()
+                if item is None:
+                    break
+                yield {
+                    "event": item["event"],
+                    "data": json.dumps(item["data"], ensure_ascii=False),
+                }
                 if await request.is_disconnected():
+                    graph_task.cancel()
                     break
 
+            if not graph_task.done():
+                await graph_task
+
+            yield {
+                "event": "trace",
+                "data": json.dumps({"rag_trace": final_trace}, ensure_ascii=False),
+            }
             yield {
                 "event": "done",
-                "data": json.dumps({"answer": full_answer, "sources": final_sources}),
+                "data": json.dumps(
+                    {
+                        "answer": full_answer,
+                        "sources": final_sources,
+                        "rag_trace": final_trace,
+                    },
+                    ensure_ascii=False,
+                ),
             }
-            await _save_assistant_message(req.conversation_id, full_answer, final_sources)
+            await _save_assistant_message(
+                req.conversation_id,
+                full_answer,
+                final_sources,
+                final_trace,
+            )
+        except asyncio.CancelledError:
+            graph_task.cancel()
+            raise
+        except GeneratorExit:
+            graph_task.cancel()
+            raise
         except Exception as exc:
             logger.error("Stream error: %s", exc)
             yield {
                 "event": "error",
                 "data": json.dumps({"error": "An internal error occurred"}),
             }
+        finally:
+            set_rag_step_queue(None)
 
     return EventSourceResponse(event_generator())
 
@@ -231,6 +326,9 @@ async def chat_non_stream(req: SendMessageRequest):
         "paper_id": req.paper_id,
         "route": None,
         "context": [],
+        "docs": [],
+        "rag_trace": {},
+        "rewrite_count": 0,
         "answer": "",
         "sources": [],
     }
@@ -238,6 +336,12 @@ async def chat_non_stream(req: SendMessageRequest):
     result = await rag_graph.ainvoke(state)
     answer = result.get("answer", "")
     sources = result.get("sources", []) or []
-    await _save_assistant_message(req.conversation_id, answer, sources)
+    rag_trace = result.get("rag_trace", {}) or {}
+    await _save_assistant_message(req.conversation_id, answer, sources, rag_trace)
 
-    return {"message_id": user_msg_id, "response": answer, "sources": sources}
+    return {
+        "message_id": user_msg_id,
+        "response": answer,
+        "sources": sources,
+        "rag_trace": rag_trace,
+    }

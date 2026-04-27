@@ -61,7 +61,7 @@ export default function UploadOverlay({ onFileSelect, onOpenSettings, onOpenHist
           </p>
           <h1 className="mt-4 max-w-2xl font-display text-4xl leading-tight text-text-primary md:text-6xl">
             面向论文阅读的
-            <span className="block text-accent">多模态检索工作台</span>
+            <span className="block text-accent">多模态检索智能体</span>
           </h1>
           <p className="mt-5 max-w-xl text-base leading-8 text-text-secondary md:text-lg">
             上传一篇 PDF，系统会自动完成结构解析、证据索引、阅读问答和笔记收集，
@@ -92,7 +92,7 @@ export default function UploadOverlay({ onFileSelect, onOpenSettings, onOpenHist
                 开始一场新的论文阅读
               </h2>
               <p className="mt-2 text-sm leading-6 text-text-secondary">
-                支持拖拽上传。解析完成后会自动进入阅读工作台，并创建可追溯证据的问答会话。
+                支持拖拽上传。解析完成后会自动进入阅读智能体工作台，并创建可追溯证据的问答会话。
               </p>
 
               <label

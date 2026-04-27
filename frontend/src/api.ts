@@ -1,4 +1,4 @@
-import type { AppSettings, LLMProvider, PaperSource } from './types'
+import type { AppSettings, LLMProvider, PaperSource, RagStep } from './types'
 
 const API_BASE = '/api'
 
@@ -40,9 +40,12 @@ export async function createConversation(paperId: string): Promise<{ id: string;
 
 export interface StreamCallbacks {
   onRoute?: (route: string) => void
+  onRagStep?: (step: RagStep) => void
+  onTrace?: (trace: Record<string, unknown>) => void
   onToken: (token: string) => void
-  onDone: (fullAnswer: string, sources: PaperSource[]) => void
+  onDone: (fullAnswer: string, sources: PaperSource[], trace?: Record<string, unknown>) => void
   onError?: (error: string) => void
+  onSettled?: () => void
 }
 
 export function streamChat(
@@ -52,7 +55,6 @@ export function streamChat(
   callbacks: StreamCallbacks,
 ): AbortController {
   const controller = new AbortController()
-
   fetch(`${API_BASE}/chat/stream`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -91,10 +93,14 @@ export function streamChat(
             const data = JSON.parse(line.slice(6))
             if (data.route !== undefined) {
               callbacks.onRoute?.(data.route)
+            } else if (data.rag_step !== undefined) {
+              callbacks.onRagStep?.(data.rag_step)
+            } else if (data.rag_trace !== undefined) {
+              callbacks.onTrace?.(data.rag_trace)
             } else if (data.content !== undefined) {
               callbacks.onToken(data.content)
             } else if (data.answer !== undefined) {
-              callbacks.onDone(data.answer, data.sources || [])
+              callbacks.onDone(data.answer, data.sources || [], data.rag_trace)
             } else if (data.error !== undefined) {
               callbacks.onError?.(data.error)
             }
@@ -108,6 +114,9 @@ export function streamChat(
       if (err.name !== 'AbortError') {
         callbacks.onError?.(err.message)
       }
+    })
+    .finally(() => {
+      callbacks.onSettled?.()
     })
 
   return controller

@@ -48,13 +48,22 @@ def _sanitize_sources(sources: list[dict]) -> list[dict]:
         cleaned.append(
             {
                 "id": source.get("id", ""),
+                "block_id": source.get("block_id", ""),
+                "chunk_id": source.get("chunk_id", ""),
+                "parent_chunk_id": source.get("parent_chunk_id", ""),
+                "root_chunk_id": source.get("root_chunk_id", ""),
+                "chunk_level": source.get("chunk_level", 0),
                 "type": source.get("type", "text"),
                 "page_number": source.get("page_number", 1),
                 "title": source.get("title", ""),
                 "section": source.get("section", ""),
                 "content": source.get("content", ""),
                 "score": source.get("score", 0),
+                "rerank_score": source.get("rerank_score"),
+                "rrf_rank": source.get("rrf_rank"),
                 "asset_url": source.get("asset_url", ""),
+                "merged_from_children": source.get("merged_from_children", False),
+                "merged_child_count": source.get("merged_child_count", 0),
             }
         )
     return cleaned
@@ -84,15 +93,31 @@ def _build_user_message(question: str, sources: list[dict]) -> HumanMessage:
 
     if settings.enable_multimodal_answers:
         multimodal_parts: list[dict] = [{"type": "text", "text": prompt_text}]
-        for source in sources[:2]:
+        image_count = 0
+        image_limit = max(settings.multimodal_answer_image_limit, 0)
+        for source_index, source in enumerate(sources, start=1):
+            if image_count >= image_limit:
+                break
+            if source.get("type") != "image":
+                continue
             data_url = _to_data_url(source.get("asset_path", ""))
             if data_url:
+                multimodal_parts.append(
+                    {
+                        "type": "text",
+                        "text": (
+                            f"Visual evidence [S{source_index}] "
+                            f"{source.get('title') or source.get('id') or 'image'}"
+                        ),
+                    }
+                )
                 multimodal_parts.append(
                     {
                         "type": "image_url",
                         "image_url": {"url": data_url},
                     }
                 )
+                image_count += 1
         if len(multimodal_parts) > 1:
             content = multimodal_parts
 

@@ -1,12 +1,27 @@
 export interface PaperSource {
   id: string
+  block_id?: string
+  chunk_id?: string
+  parent_chunk_id?: string
+  root_chunk_id?: string
+  chunk_level?: number
   type: string
   page_number: number
   title: string
   section?: string
   content: string
   score?: number
+  rerank_score?: number
+  rrf_rank?: number
   asset_url?: string
+  merged_from_children?: boolean
+  merged_child_count?: number
+}
+
+export interface RagStep {
+  icon: string
+  label: string
+  detail?: string
 }
 
 export interface ChatMessage {
@@ -15,6 +30,8 @@ export interface ChatMessage {
   content: string
   timestamp: number
   sources?: PaperSource[]
+  ragSteps?: RagStep[]
+  ragTrace?: Record<string, unknown>
 }
 
 export interface PaperFile {

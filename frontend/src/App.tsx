@@ -29,6 +29,18 @@ function parseSources(metadataJson?: string): PaperSource[] {
   }
 }
 
+function parseRagTrace(metadataJson?: string): Record<string, unknown> | undefined {
+  if (!metadataJson) return undefined
+  try {
+    const parsed = JSON.parse(metadataJson)
+    return parsed?.rag_trace && typeof parsed.rag_trace === 'object'
+      ? parsed.rag_trace
+      : undefined
+  } catch {
+    return undefined
+  }
+}
+
 function fallbackTitleFromFilename(filename: string) {
   return filename.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ').trim() || filename
 }
@@ -155,13 +167,13 @@ function App() {
   }, [pollStatus])
 
   const handleSendMessage = useCallback((content: string) => {
-    if (!file || !conversationIdRef.current || isStreaming) return
+    if (!file || !conversationIdRef.current || isStreaming) return false
 
     const assistantMsgId = crypto.randomUUID()
     setMessages((prev) => [
       ...prev,
       { id: crypto.randomUUID(), role: 'user', content, timestamp: Date.now() },
-      { id: assistantMsgId, role: 'assistant', content: '', timestamp: Date.now(), sources: [] },
+      { id: assistantMsgId, role: 'assistant', content: '', timestamp: Date.now(), sources: [], ragSteps: [] },
     ])
     setIsStreaming(true)
 
@@ -177,13 +189,28 @@ function App() {
               : message
           )))
         },
-        onDone: (_answer, sources) => {
+        onRagStep: (step) => {
           setMessages((prev) => prev.map((message) => (
             message.id === assistantMsgId
-              ? { ...message, sources }
+              ? { ...message, ragSteps: [...(message.ragSteps || []), step] }
+              : message
+          )))
+        },
+        onTrace: (trace) => {
+          setMessages((prev) => prev.map((message) => (
+            message.id === assistantMsgId
+              ? { ...message, ragTrace: trace }
+              : message
+          )))
+        },
+        onDone: (_answer, sources, trace) => {
+          setMessages((prev) => prev.map((message) => (
+            message.id === assistantMsgId
+              ? { ...message, sources, ragTrace: trace || message.ragTrace }
               : message
           )))
           setIsStreaming(false)
+          abortRef.current = null
         },
         onError: (error) => {
           setMessages((prev) => prev.map((message) => (
@@ -192,9 +219,15 @@ function App() {
               : message
           )))
           setIsStreaming(false)
+          abortRef.current = null
+        },
+        onSettled: () => {
+          setIsStreaming(false)
+          abortRef.current = null
         },
       },
     )
+    return true
   }, [file, isStreaming])
 
   const handleQuickAction = useCallback((label: string, prompt: string) => {
@@ -215,6 +248,7 @@ function App() {
         content: '',
         timestamp: Date.now(),
         sources: [],
+        ragSteps: [],
       },
     ])
     setIsStreaming(true)
@@ -231,10 +265,24 @@ function App() {
               : message
           )))
         },
-        onDone: (_answer, sources) => {
+        onRagStep: (step) => {
           setMessages((prev) => prev.map((message) => (
             message.id === assistantMsgId
-              ? { ...message, sources }
+              ? { ...message, ragSteps: [...(message.ragSteps || []), step] }
+              : message
+          )))
+        },
+        onTrace: (trace) => {
+          setMessages((prev) => prev.map((message) => (
+            message.id === assistantMsgId
+              ? { ...message, ragTrace: trace }
+              : message
+          )))
+        },
+        onDone: (_answer, sources, trace) => {
+          setMessages((prev) => prev.map((message) => (
+            message.id === assistantMsgId
+              ? { ...message, sources, ragTrace: trace || message.ragTrace }
               : message
           )))
           setIsStreaming(false)
@@ -322,6 +370,7 @@ function App() {
             role: message.role as ChatMessage['role'],
             content: message.content,
             sources: parseSources(message.metadata_json),
+            ragTrace: parseRagTrace(message.metadata_json),
             timestamp: new Date(message.created_at).getTime(),
           })))
         } else {
@@ -386,12 +435,18 @@ function App() {
     )
   }
 
+  const stats = file.metadata?.stats || {}
+  const visibleStats = Object.entries(stats).filter(([, value]) => value > 0).slice(0, 4)
+
   return (
     <div className="workspace-shell flex h-full w-full flex-col overflow-hidden px-3 py-3 md:px-5 md:py-5">
       <header className="workspace-header mb-3 rounded-[32px] border border-border bg-[rgba(255,251,244,0.86)] px-5 py-4 shadow-[0_20px_60px_rgba(36,30,20,0.08)] backdrop-blur md:px-6">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
+              <span className="rounded-full bg-text-primary px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-surface">
+                AI Workspace
+              </span>
               <span className="rounded-full bg-surface-secondary px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-text-tertiary">
                 {file.status}
               </span>
@@ -428,25 +483,41 @@ function App() {
             )}
           </div>
 
-          <div className="flex shrink-0 flex-wrap gap-2">
-            <button
-              onClick={() => setShowHistory(true)}
-              className="rounded-full border border-border bg-surface px-4 py-2 text-sm text-text-secondary transition-colors hover:bg-surface-secondary"
-            >
-              文库历史
-            </button>
-            <button
-              onClick={handleNewPaper}
-              className="rounded-full border border-border bg-surface px-4 py-2 text-sm text-text-secondary transition-colors hover:bg-surface-secondary"
-            >
-              新建阅读
-            </button>
-            <button
-              onClick={() => setShowSettings(true)}
-              className="rounded-full bg-text-primary px-4 py-2 text-sm font-medium text-surface transition-colors hover:bg-[#30271e]"
-            >
-              模型设置
-            </button>
+          <div className="flex shrink-0 flex-col gap-3 lg:items-end">
+            {visibleStats.length > 0 && (
+              <div className="grid grid-cols-2 gap-2 text-right">
+                {visibleStats.map(([key, value]) => (
+                  <div key={key} className="rounded-2xl bg-surface-secondary px-3 py-2">
+                    <div className="text-[11px] uppercase tracking-[0.18em] text-text-tertiary">
+                      {key}
+                    </div>
+                    <div className="text-sm font-semibold text-text-primary">
+                      {value}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div className="flex flex-wrap gap-2 lg:justify-end">
+              <button
+                onClick={() => setShowHistory(true)}
+                className="rounded-full border border-border bg-surface px-4 py-2 text-sm text-text-secondary transition-colors hover:bg-surface-secondary"
+              >
+                文库历史
+              </button>
+              <button
+                onClick={handleNewPaper}
+                className="rounded-full border border-border bg-surface px-4 py-2 text-sm text-text-secondary transition-colors hover:bg-surface-secondary"
+              >
+                新建阅读
+              </button>
+              <button
+                onClick={() => setShowSettings(true)}
+                className="rounded-full bg-text-primary px-4 py-2 text-sm font-medium text-surface transition-colors hover:bg-[#30271e]"
+              >
+                模型设置
+              </button>
+            </div>
           </div>
         </div>
       </header>

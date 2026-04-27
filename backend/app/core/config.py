@@ -51,11 +51,40 @@ class Settings(BaseSettings):
     enable_multimodal_answers: bool = (
         os.getenv("ENABLE_MULTIMODAL_ANSWERS", "true").lower() == "true"
     )
+    multimodal_answer_image_limit: int = int(
+        os.getenv("MULTIMODAL_ANSWER_IMAGE_LIMIT", "4")
+    )
     enable_multimodal_enrichment: bool = (
         os.getenv("ENABLE_MULTIMODAL_ENRICHMENT", "true").lower() == "true"
     )
     multimodal_enrichment_llm_limit: int = int(
         os.getenv("MULTIMODAL_ENRICHMENT_LLM_LIMIT", "8")
+    )
+
+    # Agentic RAG (adapted from superMew, without auth/RBAC/frontend stack)
+    agentic_rag_enabled: bool = (
+        os.getenv("AGENTIC_RAG_ENABLED", "true").lower() == "true"
+    )
+    bm25_state_path: Path = Path(
+        os.getenv("BM25_STATE_PATH") or base_dir / "data" / "bm25_state.json"
+    )
+    agentic_collection_prefix: str = os.getenv(
+        "AGENTIC_MILVUS_COLLECTION_PREFIX", "papernote_agentic_blocks"
+    )
+    dense_embedding_dim: int = int(os.getenv("DENSE_EMBEDDING_DIM", "1024"))
+    rerank_model: str = os.getenv("RERANK_MODEL", "")
+    rerank_binding_host: str = os.getenv("RERANK_BINDING_HOST", "")
+    rerank_api_key: str = os.getenv("RERANK_API_KEY", "")
+    auto_merge_enabled: bool = (
+        os.getenv("AUTO_MERGE_ENABLED", "true").lower() != "false"
+    )
+    auto_merge_threshold: int = int(os.getenv("AUTO_MERGE_THRESHOLD", "2"))
+    leaf_retrieve_level: int = int(os.getenv("LEAF_RETRIEVE_LEVEL", "3"))
+    agentic_candidate_multiplier: int = int(os.getenv("AGENTIC_CANDIDATE_MULTIPLIER", "3"))
+    rag_grade_model: str = os.getenv("RAG_GRADE_MODEL", "")
+    rag_max_rewrites: int = int(os.getenv("RAG_MAX_REWRITES", "1"))
+    conversation_summary_trigger_messages: int = int(
+        os.getenv("CONVERSATION_SUMMARY_TRIGGER_MESSAGES", "12")
     )
 
     # API Keys (set via environment variables)

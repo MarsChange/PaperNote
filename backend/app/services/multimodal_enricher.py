@@ -52,6 +52,12 @@ class MultimodalEnricher:
         }
         stats = {"heuristic": 0, "llm": 0, "failed_llm": 0, "total": 0}
         llm_budget = max(settings.multimodal_enrichment_llm_limit, 0)
+        can_call_llm = llm_budget > 0 and self._can_call_llm()
+        llm_block_ids = (
+            self._llm_priority_block_ids(blocks, llm_budget)
+            if can_call_llm
+            else set()
+        )
 
         for block in blocks:
             block_type = str(block.get("type", "")).lower()
@@ -65,12 +71,11 @@ class MultimodalEnricher:
             stats["heuristic"] += 1
             stats["total"] += 1
 
-            if llm_budget > 0 and self._can_call_llm():
+            if str(block.get("id", "")) in llm_block_ids:
                 llm_metadata = self._llm_metadata(block, source_item, context_text)
                 if llm_metadata:
                     metadata = self._merge_metadata(metadata, llm_metadata)
                     stats["llm"] += 1
-                    llm_budget -= 1
                 else:
                     stats["failed_llm"] += 1
 
@@ -81,6 +86,31 @@ class MultimodalEnricher:
             "version": ENRICHMENT_VERSION,
             "stats": stats,
             "llm_limit": settings.multimodal_enrichment_llm_limit,
+            "llm_priority": "image_first",
+        }
+
+    def _llm_priority_block_ids(
+        self, blocks: list[dict[str, Any]], llm_budget: int
+    ) -> set[str]:
+        if llm_budget <= 0:
+            return set()
+        modal_blocks = [
+            block
+            for block in blocks
+            if str(block.get("type", "")).lower() in MODAL_TYPES
+        ]
+        priority = {"image": 0, "table": 1, "equation": 2}
+        ordered_blocks = sorted(
+            modal_blocks,
+            key=lambda block: (
+                priority.get(str(block.get("type", "")).lower(), 99),
+                int(block.get("order", 0)),
+            ),
+        )
+        return {
+            str(block.get("id", ""))
+            for block in ordered_blocks[:llm_budget]
+            if block.get("id")
         }
 
     def _can_call_llm(self) -> bool:

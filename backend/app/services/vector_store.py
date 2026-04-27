@@ -2,17 +2,22 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
+import mimetypes
 import re
 import warnings
 from pathlib import Path
 from typing import Any, Optional
 
+import httpx
 import openai
-from pymilvus import DataType, MilvusClient
+from pymilvus import AnnSearchRequest, DataType, MilvusClient, RRFRanker
 
 from app.core.config import settings
+from app.services.agentic_bm25 import bm25_encoder
+from app.services.agentic_docstore import agentic_chunk_builder, agentic_docstore
 from app.services.knowledge_graph import knowledge_graph_indexer
 from app.services.mineru import ParseResult
 from app.services.multimodal_enricher import multimodal_enricher
@@ -26,6 +31,8 @@ warnings.filterwarnings(
 
 BLOCK_CHAR_LIMIT = 1200
 BLOCK_CHAR_OVERLAP = 180
+QUERY_MAX_LIMIT = 16384
+RERANK_IMAGE_MAX_BYTES = 4 * 1024 * 1024
 
 EMBEDDING_PROVIDERS = {
     "openai": ("openai_api_key", "openai_base_url"),
@@ -33,6 +40,16 @@ EMBEDDING_PROVIDERS = {
     "kimi": ("kimi_api_key", "kimi_base_url"),
     "gemini": ("gemini_api_key", "gemini_base_url"),
 }
+
+FIGURE_REF_RE = re.compile(
+    r"(?:fig(?:ure)?\.?|figure|图|圖)\s*[_\-.:：]?\s*0*(\d+[a-zA-Z]?)",
+    flags=re.IGNORECASE,
+)
+SUBFIGURE_QUERY_HINTS = ("subfigure", "panel", "subplot", "子图", "分图", "图中", "图里")
+SUBFIGURE_LABEL_RE = re.compile(
+    r"(?:^|[\s,，;；(（])([a-h])(?=[\s,，、;；.．:：)）])",
+    flags=re.IGNORECASE,
+)
 
 
 class VectorStore:
@@ -91,6 +108,14 @@ class VectorStore:
         base = re.sub(r"[^a-zA-Z0-9_]", "_", settings.milvus_collection).strip("_")
         return f"{base or 'papernote_blocks'}_{dimension}"
 
+    def _agentic_collection_name(self, dimension: int) -> str:
+        base = re.sub(
+            r"[^a-zA-Z0-9_]",
+            "_",
+            settings.agentic_collection_prefix,
+        ).strip("_")
+        return f"{base or 'papernote_agentic_blocks'}_{dimension}"
+
     def _ensure_collection(self, dimension: int) -> str:
         collection_name = self._collection_name(dimension)
         if self.client.has_collection(collection_name):
@@ -119,6 +144,58 @@ class VectorStore:
             field_name="embedding",
             index_type="AUTOINDEX",
             metric_type="COSINE",
+        )
+        self.client.create_collection(
+            collection_name=collection_name,
+            schema=schema,
+            index_params=index_params,
+        )
+        return collection_name
+
+    def _ensure_agentic_collection(self, dimension: int) -> str:
+        collection_name = self._agentic_collection_name(dimension)
+        if self.client.has_collection(collection_name):
+            return collection_name
+
+        schema = MilvusClient.create_schema(auto_id=False, enable_dynamic_field=True)
+        schema.add_field(
+            field_name="id",
+            datatype=DataType.VARCHAR,
+            is_primary=True,
+            max_length=256,
+        )
+        schema.add_field(field_name="paper_id", datatype=DataType.VARCHAR, max_length=64)
+        schema.add_field(field_name="block_id", datatype=DataType.VARCHAR, max_length=160)
+        schema.add_field(field_name="block_type", datatype=DataType.VARCHAR, max_length=32)
+        schema.add_field(field_name="page_number", datatype=DataType.INT64)
+        schema.add_field(field_name="order", datatype=DataType.INT64)
+        schema.add_field(field_name="chunk_id", datatype=DataType.VARCHAR, max_length=256)
+        schema.add_field(
+            field_name="parent_chunk_id",
+            datatype=DataType.VARCHAR,
+            max_length=256,
+        )
+        schema.add_field(field_name="root_chunk_id", datatype=DataType.VARCHAR, max_length=256)
+        schema.add_field(field_name="chunk_level", datatype=DataType.INT64)
+        schema.add_field(field_name="chunk_idx", datatype=DataType.INT64)
+        schema.add_field(field_name="dense_embedding", datatype=DataType.FLOAT_VECTOR, dim=dimension)
+        schema.add_field(field_name="sparse_embedding", datatype=DataType.SPARSE_FLOAT_VECTOR)
+        schema.add_field(field_name="text", datatype=DataType.VARCHAR, max_length=8000)
+        schema.add_field(field_name="title", datatype=DataType.VARCHAR, max_length=1200)
+        schema.add_field(field_name="section", datatype=DataType.VARCHAR, max_length=1200)
+        schema.add_field(field_name="asset_relpath", datatype=DataType.VARCHAR, max_length=1200)
+
+        index_params = self.client.prepare_index_params()
+        index_params.add_index(
+            field_name="dense_embedding",
+            index_type="AUTOINDEX",
+            metric_type="COSINE",
+        )
+        index_params.add_index(
+            field_name="sparse_embedding",
+            index_type="SPARSE_INVERTED_INDEX",
+            metric_type="IP",
+            params={"drop_ratio_build": 0.2},
         )
         self.client.create_collection(
             collection_name=collection_name,
@@ -391,11 +468,33 @@ class VectorStore:
             paper_id, parsed, blocks, metadata
         )
         metadata["knowledge_graph"] = graph_metadata
+
+        parent_chunks, leaf_chunks = agentic_chunk_builder.build(paper_id, blocks)
+        removed_leaf_texts = agentic_docstore.remove_existing_leaf_texts(paper_id)
+        if removed_leaf_texts:
+            bm25_encoder.increment_remove_documents(removed_leaf_texts)
+        agentic_docstore.write(paper_id, parent_chunks, leaf_chunks)
+        metadata["agentic_rag"] = {
+            "enabled": settings.agentic_rag_enabled,
+            "source": "superMew_adapted",
+            "chunking": "three_level_sliding_window",
+            "leaf_only_vectors": True,
+            "parent_docstore": str(agentic_docstore.parents_path(paper_id)),
+            "leaf_docstore": str(agentic_docstore.leaves_path(paper_id)),
+            "parent_chunk_count": len(parent_chunks),
+            "leaf_chunk_count": len(leaf_chunks),
+            "bm25_state_path": str(settings.bm25_state_path),
+        }
         self._write_manifest(paper_id, blocks, metadata)
 
         if not blocks:
             logger.warning("No blocks generated for paper %s", paper_id)
             return metadata
+
+        if settings.agentic_rag_enabled and leaf_chunks and self.can_embed():
+            agentic_meta = self._index_agentic_chunks(paper_id, leaf_chunks)
+            metadata["agentic_rag"].update(agentic_meta)
+            self._write_manifest(paper_id, blocks, metadata)
 
         if not self.can_embed():
             logger.warning(
@@ -449,6 +548,95 @@ class VectorStore:
 
         return metadata
 
+    def _index_agentic_chunks(self, paper_id: str, leaf_chunks: list[dict[str, Any]]) -> dict[str, Any]:
+        texts = [chunk["text"] for chunk in leaf_chunks if chunk.get("text")]
+        if not texts:
+            return {"indexed": False, "reason": "no_leaf_texts"}
+
+        try:
+            self._delete_agentic_vectors(paper_id)
+            bm25_encoder.increment_add_documents(texts)
+            dense_embeddings = self.embed_texts(texts)
+            sparse_embeddings = bm25_encoder.encode_many(texts)
+            if not dense_embeddings:
+                return {"indexed": False, "reason": "no_dense_embeddings"}
+
+            dimension = len(dense_embeddings[0])
+            collection_name = self._ensure_agentic_collection(dimension)
+            self.client.insert(
+                collection_name=collection_name,
+                data=[
+                    self._agentic_insert_payload(chunk, dense, sparse)
+                    for chunk, dense, sparse in zip(
+                        leaf_chunks,
+                        dense_embeddings,
+                        sparse_embeddings,
+                    )
+                ],
+            )
+            return {
+                "indexed": True,
+                "vector_backend": "milvus_hybrid",
+                "collection": collection_name,
+                "dimension": dimension,
+                "dense_field": "dense_embedding",
+                "sparse_field": "sparse_embedding",
+                "bm25_total_docs": bm25_encoder.total_docs,
+            }
+        except Exception as exc:
+            logger.error("Agentic hybrid indexing failed for %s: %s", paper_id, exc)
+            return {"indexed": False, "error": str(exc)}
+
+    def _agentic_insert_payload(
+        self,
+        chunk: dict[str, Any],
+        dense_embedding: list[float],
+        sparse_embedding: dict[int, float],
+    ) -> dict[str, Any]:
+        return {
+            "id": chunk["chunk_id"],
+            "paper_id": chunk["paper_id"],
+            "block_id": chunk.get("block_id", ""),
+            "block_type": chunk.get("type", "text"),
+            "page_number": int(chunk.get("page_number") or 1),
+            "order": int(chunk.get("order") or 0),
+            "chunk_id": chunk.get("chunk_id", ""),
+            "parent_chunk_id": chunk.get("parent_chunk_id", ""),
+            "root_chunk_id": chunk.get("root_chunk_id", ""),
+            "chunk_level": int(chunk.get("chunk_level") or 3),
+            "chunk_idx": int(chunk.get("chunk_idx") or 0),
+            "dense_embedding": dense_embedding,
+            "sparse_embedding": sparse_embedding,
+            "text": str(chunk.get("text", ""))[:8000],
+            "title": str(chunk.get("title", ""))[:1200],
+            "section": str(chunk.get("section", ""))[:1200],
+            "asset_relpath": str(chunk.get("asset_relpath", ""))[:1200],
+            "asset_path": chunk.get("asset_path", ""),
+            "semantic_summary": chunk.get("semantic_summary", ""),
+            "semantic_metadata": json.dumps(
+                chunk.get("semantic_metadata", {}),
+                ensure_ascii=False,
+            )[:8000],
+        }
+
+    def _delete_agentic_vectors(self, paper_id: str):
+        manifest = self._load_manifest(paper_id)
+        collection_name = (
+            manifest.get("metadata", {})
+            .get("agentic_rag", {})
+            .get("collection")
+        )
+        if not collection_name:
+            return
+        try:
+            if self.client.has_collection(collection_name):
+                self.client.delete(
+                    collection_name=collection_name,
+                    filter=f'paper_id == "{paper_id}"',
+                )
+        except Exception as exc:
+            logger.warning("Could not delete agentic vectors for %s: %s", paper_id, exc)
+
     def _tokenize_query(self, text: str) -> list[str]:
         normalized = self._normalize_text(text).lower()
         latin_terms = re.findall(r"[a-z0-9][a-z0-9\-_]{1,}", normalized)
@@ -460,6 +648,518 @@ class VectorStore:
             else:
                 cjk_bigrams.extend(phrase[i : i + 2] for i in range(len(phrase) - 1))
         return list(dict.fromkeys(latin_terms + cjk_phrases + cjk_bigrams))
+
+    def _normalize_figure_refs(self, raw_ref: str) -> set[str]:
+        match = re.match(r"0*(\d+)([a-zA-Z]?)", str(raw_ref).strip())
+        if not match:
+            return set()
+        number = str(int(match.group(1)))
+        suffix = match.group(2).lower()
+        refs = {number}
+        if suffix:
+            refs.add(f"{number}{suffix}")
+        return refs
+
+    def _extract_figure_refs(self, text: str) -> set[str]:
+        refs: set[str] = set()
+        for match in FIGURE_REF_RE.finditer(text or ""):
+            refs.update(self._normalize_figure_refs(match.group(1)))
+        return refs
+
+    def _block_figure_refs(self, block: dict[str, Any]) -> set[str]:
+        semantic_metadata = block.get("semantic_metadata") or {}
+        if not isinstance(semantic_metadata, dict):
+            semantic_metadata = {}
+        modality_specific = semantic_metadata.get("modality_specific") or {}
+        if not isinstance(modality_specific, dict):
+            modality_specific = {}
+        entity = semantic_metadata.get("entity") or {}
+        if not isinstance(entity, dict):
+            entity = {}
+        content_header = str(block.get("content", "")).split("Nearby context:", 1)[0]
+        search_header = str(block.get("search_text", "")).split("Nearby context:", 1)[0]
+
+        text = " ".join(
+            str(value)
+            for value in [
+                block.get("id", ""),
+                block.get("title", ""),
+                content_header,
+                search_header,
+                block.get("asset_relpath", ""),
+                modality_specific.get("figure_id", ""),
+                entity.get("name", ""),
+                entity.get("summary", ""),
+            ]
+            if value
+        )
+        return self._extract_figure_refs(text)
+
+    def _extract_subfigure_labels(self, query: str) -> set[str]:
+        normalized = self._normalize_text(query).lower()
+        if not any(hint in normalized for hint in SUBFIGURE_QUERY_HINTS):
+            return set()
+        return {match.group(1).lower() for match in SUBFIGURE_LABEL_RE.finditer(normalized)}
+
+    def _block_subfigure_labels(self, block: dict[str, Any]) -> set[str]:
+        text = " ".join(
+            str(value)
+            for value in [
+                block.get("title", ""),
+                block.get("content", ""),
+                block.get("search_text", ""),
+                block.get("semantic_summary", ""),
+            ]
+            if value
+        )
+        return {match.group(1).lower() for match in SUBFIGURE_LABEL_RE.finditer(text)}
+
+    def _figure_ref_bonus(self, query: str, block: dict[str, Any]) -> float:
+        query_refs = self._extract_figure_refs(query)
+        if not query_refs:
+            return 0.0
+        if query_refs.isdisjoint(self._block_figure_refs(block)):
+            return 0.0
+        return 1.15 if block.get("type") == "image" else 0.35
+
+    def _subfigure_bonus(self, query: str, block: dict[str, Any]) -> float:
+        if block.get("type") != "image":
+            return 0.0
+        query_labels = self._extract_subfigure_labels(query)
+        if not query_labels:
+            return 0.0
+        overlap = query_labels & self._block_subfigure_labels(block)
+        return min(0.12 * len(overlap), 0.36)
+
+    def _rerank_endpoint(self) -> str:
+        host = settings.rerank_binding_host.strip().rstrip("/")
+        if not host:
+            return ""
+        if "/services/rerank/" in host or host.endswith(("/v1/rerank", "/v1/reranks")):
+            return host
+        return host if host.endswith("/v1/rerank") else f"{host}/v1/rerank"
+
+    def _is_dashscope_vl_rerank(self) -> bool:
+        return settings.rerank_model.strip().lower() == "qwen3-vl-rerank"
+
+    def _rerank_doc_text(self, doc: dict[str, Any]) -> str:
+        parts = [
+            str(doc.get("title") or ""),
+            str(doc.get("section") or ""),
+            str(doc.get("semantic_summary") or ""),
+            str(doc.get("text") or doc.get("content") or doc.get("search_text") or ""),
+        ]
+        seen: set[str] = set()
+        compact: list[str] = []
+        for part in parts:
+            normalized = part.strip()
+            if normalized and normalized not in seen:
+                compact.append(normalized)
+                seen.add(normalized)
+        return "\n".join(compact)[:12000]
+
+    def _image_data_url_for_rerank(self, asset_path: str) -> str:
+        if not asset_path:
+            return ""
+        path = Path(asset_path).expanduser()
+        if (
+            not path.exists()
+            or not path.is_file()
+            or path.stat().st_size > RERANK_IMAGE_MAX_BYTES
+        ):
+            return ""
+        mime_type, _ = mimetypes.guess_type(path.name)
+        if not mime_type or not mime_type.startswith("image/"):
+            return ""
+        encoded = base64.b64encode(path.read_bytes()).decode("utf-8")
+        return f"data:{mime_type};base64,{encoded}"
+
+    def _dashscope_vl_rerank_document(self, doc: dict[str, Any]) -> dict[str, str]:
+        if (doc.get("type") or doc.get("block_type")) == "image":
+            data_url = self._image_data_url_for_rerank(str(doc.get("asset_path") or ""))
+            if data_url:
+                return {"image": data_url}
+        return {"text": self._rerank_doc_text(doc)}
+
+    def _rerank_payload(
+        self, query: str, ranked: list[dict[str, Any]], top_k: int
+    ) -> dict[str, Any]:
+        top_n = min(top_k, len(ranked))
+        if self._is_dashscope_vl_rerank():
+            return {
+                "model": settings.rerank_model,
+                "input": {
+                    "query": {"text": query},
+                    "documents": [
+                        self._dashscope_vl_rerank_document(doc) for doc in ranked
+                    ],
+                },
+                "parameters": {
+                    "top_n": top_n,
+                    "return_documents": False,
+                    "instruct": (
+                        "Given a scientific paper reading query, retrieve passages, "
+                        "figures, or tables that answer the query."
+                    ),
+                },
+            }
+        return {
+            "model": settings.rerank_model,
+            "query": query,
+            "documents": [self._rerank_doc_text(doc) for doc in ranked],
+            "top_n": top_n,
+            "return_documents": False,
+        }
+
+    def _rerank_results_from_response(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
+        results = payload.get("results")
+        if isinstance(results, list):
+            return results
+        output = payload.get("output")
+        if isinstance(output, dict) and isinstance(output.get("results"), list):
+            return output["results"]
+        return []
+
+    def _agentic_output_fields(self) -> list[str]:
+        return [
+            "paper_id",
+            "block_id",
+            "block_type",
+            "page_number",
+            "order",
+            "chunk_id",
+            "parent_chunk_id",
+            "root_chunk_id",
+            "chunk_level",
+            "chunk_idx",
+            "text",
+            "title",
+            "section",
+            "asset_relpath",
+            "asset_path",
+            "semantic_summary",
+            "semantic_metadata",
+        ]
+
+    def _hit_entity(self, hit: Any) -> dict[str, Any]:
+        entity = hit.get("entity", {}) if hasattr(hit, "get") else {}
+        if not isinstance(entity, dict):
+            entity = {}
+        out = dict(entity)
+        for field in self._agentic_output_fields():
+            if field not in out and hasattr(hit, "get"):
+                value = hit.get(field)
+                if value is not None:
+                    out[field] = value
+        if hasattr(hit, "get"):
+            out["score"] = float(hit.get("distance") or hit.get("score") or 0.0)
+            out["id"] = hit.get("id") or out.get("chunk_id")
+        return out
+
+    def _hybrid_retrieve_agentic(
+        self,
+        collection_name: str,
+        paper_id: str,
+        query: str,
+        candidate_k: int,
+    ) -> list[dict[str, Any]]:
+        dense_embedding = self.embed_texts([query])[0]
+        sparse_embedding = bm25_encoder.encode(query)
+        filter_expr = f'paper_id == "{paper_id}" and chunk_level == {settings.leaf_retrieve_level}'
+        dense_request = AnnSearchRequest(
+            data=[dense_embedding],
+            anns_field="dense_embedding",
+            param={"metric_type": "COSINE", "params": {}},
+            limit=candidate_k * 2,
+            expr=filter_expr,
+        )
+        sparse_request = AnnSearchRequest(
+            data=[sparse_embedding],
+            anns_field="sparse_embedding",
+            param={"metric_type": "IP", "params": {"drop_ratio_search": 0.2}},
+            limit=candidate_k * 2,
+            expr=filter_expr,
+        )
+        results = self.client.hybrid_search(
+            collection_name=collection_name,
+            reqs=[dense_request, sparse_request],
+            ranker=RRFRanker(k=60),
+            limit=candidate_k,
+            output_fields=self._agentic_output_fields(),
+        )
+        return [self._hit_entity(hit) for hits in results for hit in hits]
+
+    def _dense_retrieve_agentic(
+        self,
+        collection_name: str,
+        paper_id: str,
+        query: str,
+        candidate_k: int,
+    ) -> list[dict[str, Any]]:
+        dense_embedding = self.embed_texts([query])[0]
+        results = self.client.search(
+            collection_name=collection_name,
+            data=[dense_embedding],
+            anns_field="dense_embedding",
+            search_params={"metric_type": "COSINE", "params": {}},
+            filter=f'paper_id == "{paper_id}" and chunk_level == {settings.leaf_retrieve_level}',
+            limit=candidate_k,
+            output_fields=self._agentic_output_fields(),
+        )
+        return [self._hit_entity(hit) for hits in results for hit in hits]
+
+    def _lexical_retrieve_agentic(
+        self, paper_id: str, query: str, candidate_k: int
+    ) -> list[dict[str, Any]]:
+        leaves = agentic_docstore.load_leaves(paper_id)
+        if not leaves:
+            manifest = self._load_manifest(paper_id)
+            leaves = manifest.get("blocks", [])
+        scored: list[tuple[float, dict[str, Any]]] = []
+        for doc in leaves:
+            text = doc.get("text") or doc.get("search_text") or doc.get("content") or ""
+            score = self._lexical_score(query, str(text))
+            if doc.get("type") == "image":
+                score += self._modality_bias(query, "image")
+                score += self._figure_ref_bonus(query, doc)
+                score += self._subfigure_bonus(query, doc)
+            if score > 0:
+                scored.append((score, {**doc, "score": score}))
+        scored.sort(key=lambda item: item[0], reverse=True)
+        return [doc for _, doc in scored[:candidate_k]]
+
+    def _rerank_agentic_docs(
+        self, query: str, docs: list[dict[str, Any]], top_k: int
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        meta = {
+            "rerank_enabled": bool(
+                settings.rerank_model
+                and settings.rerank_binding_host
+                and settings.rerank_api_key
+            ),
+            "rerank_applied": False,
+            "rerank_model": settings.rerank_model,
+            "rerank_endpoint": self._rerank_endpoint(),
+            "rerank_error": None,
+            "candidate_count": len(docs),
+        }
+        ranked = [{**doc, "rrf_rank": index} for index, doc in enumerate(docs, 1)]
+        if not ranked or not meta["rerank_enabled"]:
+            return ranked[:top_k], meta
+
+        payload = self._rerank_payload(query, ranked, top_k)
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {settings.rerank_api_key}",
+        }
+        try:
+            meta["rerank_applied"] = True
+            with httpx.Client(timeout=15) as client:
+                response = client.post(meta["rerank_endpoint"], headers=headers, json=payload)
+            if response.status_code >= 400:
+                meta["rerank_error"] = f"HTTP {response.status_code}: {response.text}"
+                return ranked[:top_k], meta
+            reranked: list[dict[str, Any]] = []
+            for item in self._rerank_results_from_response(response.json()):
+                index = item.get("index")
+                if isinstance(index, int) and 0 <= index < len(ranked):
+                    doc = dict(ranked[index])
+                    if item.get("relevance_score") is not None:
+                        doc["rerank_score"] = item["relevance_score"]
+                    reranked.append(doc)
+            return (reranked or ranked)[:top_k], meta
+        except Exception as exc:
+            meta["rerank_error"] = str(exc)
+            return ranked[:top_k], meta
+
+    def _merge_to_parent_level(
+        self,
+        paper_id: str,
+        docs: list[dict[str, Any]],
+        threshold: int,
+    ) -> tuple[list[dict[str, Any]], int]:
+        groups: dict[str, list[dict[str, Any]]] = {}
+        for doc in docs:
+            parent_id = str(doc.get("parent_chunk_id") or "").strip()
+            if parent_id:
+                groups.setdefault(parent_id, []).append(doc)
+        merge_parent_ids = [
+            parent_id for parent_id, children in groups.items() if len(children) >= threshold
+        ]
+        if not merge_parent_ids:
+            return docs, 0
+
+        parent_docs = agentic_docstore.get_parents_by_ids(paper_id, merge_parent_ids)
+        parent_map = {
+            doc.get("chunk_id"): doc
+            for doc in parent_docs
+            if doc.get("chunk_id")
+        }
+        merged: list[dict[str, Any]] = []
+        replaced = 0
+        for doc in docs:
+            parent_id = str(doc.get("parent_chunk_id") or "").strip()
+            parent_doc = parent_map.get(parent_id)
+            if not parent_doc:
+                merged.append(doc)
+                continue
+            merged_doc = dict(parent_doc)
+            merged_doc["score"] = max(
+                float(parent_doc.get("score") or 0.0),
+                float(doc.get("score") or 0.0),
+            )
+            merged_doc["merged_from_children"] = True
+            merged_doc["merged_child_count"] = len(groups[parent_id])
+            merged.append(merged_doc)
+            replaced += 1
+
+        deduped: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for item in merged:
+            key = item.get("chunk_id") or item.get("id") or item.get("text")
+            if key in seen:
+                continue
+            seen.add(str(key))
+            deduped.append(item)
+        return deduped, replaced
+
+    def _auto_merge_agentic_docs(
+        self,
+        paper_id: str,
+        docs: list[dict[str, Any]],
+        top_k: int,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        meta = {
+            "auto_merge_enabled": settings.auto_merge_enabled,
+            "auto_merge_applied": False,
+            "auto_merge_threshold": settings.auto_merge_threshold,
+            "auto_merge_replaced_chunks": 0,
+            "auto_merge_steps": 0,
+        }
+        if not settings.auto_merge_enabled or not docs:
+            return docs[:top_k], meta
+
+        merged, replaced_l3_l2 = self._merge_to_parent_level(
+            paper_id,
+            docs,
+            settings.auto_merge_threshold,
+        )
+        merged, replaced_l2_l1 = self._merge_to_parent_level(
+            paper_id,
+            merged,
+            settings.auto_merge_threshold,
+        )
+        merged.sort(key=lambda item: float(item.get("rerank_score") or item.get("score") or 0.0), reverse=True)
+        replaced = replaced_l3_l2 + replaced_l2_l1
+        meta.update(
+            {
+                "auto_merge_applied": replaced > 0,
+                "auto_merge_replaced_chunks": replaced,
+                "auto_merge_steps": int(replaced_l3_l2 > 0) + int(replaced_l2_l1 > 0),
+            }
+        )
+        return merged[:top_k], meta
+
+    def agentic_retrieve(
+        self,
+        paper_id: str,
+        query: str,
+        top_k: int = 6,
+    ) -> dict[str, Any]:
+        candidate_k = max(top_k * max(settings.agentic_candidate_multiplier, 1), top_k)
+        manifest = self._load_manifest(paper_id)
+        agentic_meta = manifest.get("metadata", {}).get("agentic_rag", {})
+        collection_name = agentic_meta.get("collection")
+        retrieval_mode = "lexical_fallback"
+        retrieval_error = None
+        docs: list[dict[str, Any]] = []
+
+        if collection_name and self.can_embed():
+            try:
+                docs = self._hybrid_retrieve_agentic(collection_name, paper_id, query, candidate_k)
+                retrieval_mode = "hybrid"
+            except Exception as exc:
+                retrieval_error = str(exc)
+                try:
+                    docs = self._dense_retrieve_agentic(collection_name, paper_id, query, candidate_k)
+                    retrieval_mode = "dense_fallback"
+                except Exception as dense_exc:
+                    retrieval_error = f"{retrieval_error}; dense_fallback={dense_exc}"
+                    docs = []
+
+        if not docs:
+            docs = self._lexical_retrieve_agentic(paper_id, query, candidate_k)
+
+        reranked, rerank_meta = self._rerank_agentic_docs(query, docs, top_k=top_k)
+        merged, merge_meta = self._auto_merge_agentic_docs(paper_id, reranked, top_k=top_k)
+        sources = [self._serialize_agentic_doc(paper_id, doc, index) for index, doc in enumerate(merged, 1)]
+        graph_context = knowledge_graph_indexer.context_for_blocks(
+            paper_id,
+            [source.get("block_id") or source["id"] for source in sources],
+        )
+        for source in sources:
+            source["graph_context"] = graph_context.get(
+                source.get("block_id") or source["id"],
+                "",
+            )
+
+        meta = {
+            **rerank_meta,
+            **merge_meta,
+            "retrieval_mode": retrieval_mode,
+            "retrieval_error": retrieval_error,
+            "candidate_k": candidate_k,
+            "leaf_retrieve_level": settings.leaf_retrieve_level,
+            "source": "agentic_rag_supermew_adapted",
+            "hybrid_search": retrieval_mode == "hybrid",
+            "dense_sparse_rrf": retrieval_mode == "hybrid",
+        }
+        return {"sources": sources, "docs": merged, "meta": meta}
+
+    def _serialize_agentic_doc(
+        self,
+        paper_id: str,
+        doc: dict[str, Any],
+        rank: int,
+    ) -> dict[str, Any]:
+        block_id = doc.get("block_id") or doc.get("id") or doc.get("chunk_id")
+        semantic_metadata = doc.get("semantic_metadata", {})
+        if isinstance(semantic_metadata, str):
+            try:
+                semantic_metadata = json.loads(semantic_metadata)
+            except Exception:
+                semantic_metadata = {}
+        asset_url = (
+            f"/api/papers/{paper_id}/assets/{doc['asset_relpath']}"
+            if doc.get("asset_relpath")
+            else ""
+        )
+        score = doc.get("rerank_score")
+        if score is None:
+            score = doc.get("score", 0.0)
+        return {
+            "id": doc.get("chunk_id") or block_id,
+            "block_id": block_id,
+            "chunk_id": doc.get("chunk_id", ""),
+            "parent_chunk_id": doc.get("parent_chunk_id", ""),
+            "root_chunk_id": doc.get("root_chunk_id", ""),
+            "chunk_level": int(doc.get("chunk_level") or 0),
+            "type": doc.get("type") or doc.get("block_type") or "text",
+            "page_number": int(doc.get("page_number") or 1),
+            "title": doc.get("title") or doc.get("section") or f"Page {doc.get('page_number', 1)}",
+            "section": doc.get("section", ""),
+            "content": doc.get("text") or doc.get("content") or "",
+            "score": round(float(score or 0.0), 4),
+            "rerank_score": doc.get("rerank_score"),
+            "rrf_rank": doc.get("rrf_rank", rank),
+            "asset_url": asset_url,
+            "asset_relpath": doc.get("asset_relpath", ""),
+            "asset_path": doc.get("asset_path", ""),
+            "semantic_metadata": semantic_metadata,
+            "semantic_summary": doc.get("semantic_summary", ""),
+            "merged_from_children": bool(doc.get("merged_from_children")),
+            "merged_child_count": int(doc.get("merged_child_count") or 0),
+        }
 
     def _lexical_score(self, query: str, search_text: str) -> float:
         normalized_query = self._normalize_text(query).lower()
@@ -483,13 +1183,30 @@ class VectorStore:
     def _modality_bias(self, query: str, block_type: str) -> float:
         query_lower = query.lower()
         hints = {
-            "image": ["figure", "image", "diagram", "visual", "图片", "图", "示意图"],
+            "image": [
+                "figure",
+                "fig.",
+                "image",
+                "diagram",
+                "visual",
+                "subfigure",
+                "panel",
+                "图片",
+                "插图",
+                "图像",
+                "图中",
+                "子图",
+                "图",
+                "示意图",
+            ],
             "table": ["table", "tabular", "表格", "表", "数据"],
             "equation": ["equation", "formula", "latex", "公式", "方程"],
         }
         for modality, keywords in hints.items():
             if any(keyword in query_lower for keyword in keywords):
-                return 0.18 if block_type == modality else 0.0
+                if block_type != modality:
+                    return 0.0
+                return 0.32 if modality == "image" else 0.18
         return 0.0
 
     def _vector_scores(self, paper_id: str, query: str) -> dict[str, float]:
@@ -550,6 +1267,12 @@ class VectorStore:
         }
 
     def search(self, paper_id: str, query: str, top_k: int = 6) -> list[dict[str, Any]]:
+        if settings.agentic_rag_enabled:
+            agentic = self.agentic_retrieve(paper_id, query, top_k=top_k)
+            sources = agentic.get("sources", [])
+            if sources:
+                return sources
+
         manifest = self._load_manifest(paper_id)
         blocks = manifest.get("blocks", [])
         if not blocks:
@@ -561,6 +1284,8 @@ class VectorStore:
             lexical_score = self._lexical_score(query, block.get("search_text", ""))
             vector_score = vector_scores.get(block["id"], 0.0)
             modality_bias = self._modality_bias(query, block.get("type", "text"))
+            figure_ref_bonus = self._figure_ref_bonus(query, block)
+            subfigure_bonus = self._subfigure_bonus(query, block)
             order_bonus = max(
                 0.08 - (block.get("order", 0) / max(len(blocks), 1)) * 0.04, 0
             )
@@ -568,6 +1293,8 @@ class VectorStore:
                 (vector_score * 0.68)
                 + (lexical_score * 0.28)
                 + modality_bias
+                + figure_ref_bonus
+                + subfigure_bonus
                 + order_bonus
             )
             if score > 0:
@@ -657,6 +1384,10 @@ class VectorStore:
 
     def delete_paper(self, paper_id: str):
         manifest = self._load_manifest(paper_id)
+        removed_leaf_texts = agentic_docstore.remove_existing_leaf_texts(paper_id)
+        if removed_leaf_texts:
+            bm25_encoder.increment_remove_documents(removed_leaf_texts)
+        self._delete_agentic_vectors(paper_id)
         collection_name = (
             manifest.get("metadata", {}).get("vector_store", {}).get("collection")
         )
