@@ -637,6 +637,43 @@ class VectorStore:
         except Exception as exc:
             logger.warning("Could not delete agentic vectors for %s: %s", paper_id, exc)
 
+    def _agentic_collection_row_count(self, collection_name: str) -> Optional[int]:
+        if not collection_name or not self.client.has_collection(collection_name):
+            return 0
+        try:
+            stats = self.client.get_collection_stats(collection_name)
+            return int(stats.get("row_count") or 0)
+        except Exception:
+            return None
+
+    def _ensure_agentic_vectors_available(
+        self,
+        paper_id: str,
+        manifest: dict[str, Any],
+        collection_name: str,
+    ) -> str:
+        row_count = self._agentic_collection_row_count(collection_name)
+        if row_count not in (0,):
+            return collection_name
+
+        leaves = agentic_docstore.load_leaves(paper_id)
+        if not leaves:
+            return collection_name
+
+        logger.warning(
+            "Agentic collection %s is empty for %s; rebuilding from local leaf chunks",
+            collection_name,
+            paper_id,
+        )
+        rebuilt_meta = self._index_agentic_chunks(paper_id, leaves)
+        if not rebuilt_meta.get("indexed"):
+            return collection_name
+
+        metadata = manifest.setdefault("metadata", {})
+        metadata.setdefault("agentic_rag", {}).update(rebuilt_meta)
+        self._write_manifest(paper_id, manifest.get("blocks", []), metadata)
+        return str(rebuilt_meta.get("collection") or collection_name)
+
     def _tokenize_query(self, text: str) -> list[str]:
         normalized = self._normalize_text(text).lower()
         latin_terms = re.findall(r"[a-z0-9][a-z0-9\-_]{1,}", normalized)
@@ -1075,6 +1112,11 @@ class VectorStore:
         docs: list[dict[str, Any]] = []
 
         if collection_name and self.can_embed():
+            collection_name = self._ensure_agentic_vectors_available(
+                paper_id,
+                manifest,
+                collection_name,
+            )
             try:
                 docs = self._hybrid_retrieve_agentic(collection_name, paper_id, query, candidate_k)
                 retrieval_mode = "hybrid"
@@ -1089,6 +1131,7 @@ class VectorStore:
 
         if not docs:
             docs = self._lexical_retrieve_agentic(paper_id, query, candidate_k)
+            retrieval_mode = "lexical_fallback"
 
         reranked, rerank_meta = self._rerank_agentic_docs(query, docs, top_k=top_k)
         merged, merge_meta = self._auto_merge_agentic_docs(paper_id, reranked, top_k=top_k)
