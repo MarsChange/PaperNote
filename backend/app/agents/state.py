@@ -19,9 +19,18 @@ class AgentState(TypedDict, total=False):
 
     # Paper context
     paper_id: str
+    conversation_id: str
 
     # Router decision
     route: Optional[Literal["rag", "chat", "summarize"]]
+
+    # Harness agent tool planning and GSSC context
+    tool_plan: dict
+    tool_results: list[dict]
+    built_context: str
+    context_stats: dict
+    research_results: list[dict]
+    notes: list[dict]
 
     # Retrieved evidence blocks from hybrid retriever
     context: list[dict]

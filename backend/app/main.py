@@ -9,6 +9,7 @@ from app.api.papers import router as papers_router
 from app.api.chat import router as chat_router
 from app.api.settings_api import router as settings_router
 from app.api.annotations import router as annotations_router
+from app.api.evaluation import router as evaluation_router
 
 
 @asynccontextmanager
@@ -31,6 +32,7 @@ app.include_router(papers_router, prefix="/api")
 app.include_router(chat_router, prefix="/api")
 app.include_router(settings_router, prefix="/api")
 app.include_router(annotations_router, prefix="/api")
+app.include_router(evaluation_router, prefix="/api")
 
 
 @app.get("/api/health")

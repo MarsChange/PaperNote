@@ -32,34 +32,34 @@ PaperNote 是一个面向科研论文阅读的轻量级 AI 辅助系统。项目
 
 ### 后端
 
-| 模块 | 技术 |
-|---|---|
-| Web 框架 | FastAPI |
-| 异步服务 | Uvicorn |
-| Agent 编排 | LangGraph |
-| LLM 接入 | LangChain + langchain-openai |
-| PDF 解析 | MinerU API v4 |
-| PDF fallback | PyMuPDF |
-| 向量数据库 | Milvus Lite / pymilvus |
-| Dense embedding | Qwen `text-embedding-v4` |
-| Sparse retrieval | 本地 BM25SparseEncoder |
-| Rerank | DashScope `qwen3-vl-rerank` |
-| 数据库 | SQLite + aiosqlite |
-| 流式输出 | SSE / sse-starlette |
+| 模块             | 技术                          |
+| ---------------- | ----------------------------- |
+| Web 框架         | FastAPI                       |
+| 异步服务         | Uvicorn                       |
+| Agent 编排       | LangGraph                     |
+| LLM 接入         | LangChain + langchain-openai  |
+| PDF 解析         | MinerU API v4                 |
+| PDF fallback     | PyMuPDF                       |
+| 向量数据库       | Milvus Lite / pymilvus        |
+| Dense embedding  | Qwen `text-embedding-v4`    |
+| Sparse retrieval | 本地 BM25SparseEncoder        |
+| Rerank           | DashScope `qwen3-vl-rerank` |
+| 数据库           | SQLite + aiosqlite            |
+| 流式输出         | SSE / sse-starlette           |
 
 ### 前端
 
-| 模块 | 技术 |
-|---|---|
-| 框架 | React 18 |
-| 构建工具 | Vite |
-| 类型系统 | TypeScript |
-| PDF 阅读 | react-pdf |
-| Markdown 渲染 | react-markdown |
-| 数学公式 | KaTeX |
-| 布局 | react-resizable-panels |
-| 图标 | lucide-react |
-| 样式 | Tailwind CSS + 自定义 CSS |
+| 模块          | 技术                      |
+| ------------- | ------------------------- |
+| 框架          | React 18                  |
+| 构建工具      | Vite                      |
+| 类型系统      | TypeScript                |
+| PDF 阅读      | react-pdf                 |
+| Markdown 渲染 | react-markdown            |
+| 数学公式      | KaTeX                     |
+| 布局          | react-resizable-panels    |
+| 图标          | lucide-react              |
+| 样式          | Tailwind CSS + 自定义 CSS |
 
 ## 目录结构
 
@@ -96,29 +96,17 @@ PaperNote/
 
 ### 1. 后端环境
 
-建议使用已有 conda 环境 `paper-note`：
-
 ```bash
-conda activate paper-note
-cd /Users/marc/code_projects/PaperNote/backend
+cd /PaperNote/backend
 pip install -r requirements.txt
 ```
 
-如果重新创建环境：
-
-```bash
-conda create -n paper-note python=3.13
-conda activate paper-note
-cd /Users/marc/code_projects/PaperNote/backend
-pip install -r requirements.txt
-```
-
-### 2. 配置后端环境变量
+2. 配置后端环境变量
 
 复制示例配置：
 
 ```bash
-cd /Users/marc/code_projects/PaperNote/backend
+cd /PaperNote/backend
 cp .env.example .env
 ```
 
@@ -146,8 +134,7 @@ MINERU_LANGUAGE=ch
 ### 3. 启动后端
 
 ```bash
-cd /Users/marc/code_projects/PaperNote/backend
-conda activate paper-note
+cd /PaperNote/backend
 uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
@@ -160,7 +147,7 @@ curl http://127.0.0.1:8000/api/health
 ### 4. 启动前端
 
 ```bash
-cd /Users/marc/code_projects/PaperNote/frontend
+cd /PaperNote/frontend
 corepack pnpm install
 corepack pnpm dev
 ```
@@ -175,73 +162,90 @@ http://127.0.0.1:5173
 
 ### LLM
 
-| 变量 | 说明 |
-|---|---|
-| `LLM_PROVIDER` | 当前聊天和 Agent 使用的模型提供商，支持 `qwen`、`openai`、`kimi`、`gemini` 等 |
-| `LLM_MODEL` | 聊天模型名称。为空时，`qwen` 默认使用 `qwen-max` |
-| `QWEN_API_KEY` | Qwen/DashScope API Key |
+| 变量              | 说明                                                                                        |
+| ----------------- | ------------------------------------------------------------------------------------------- |
+| `LLM_PROVIDER`  | 当前聊天和 Agent 使用的模型提供商，支持 `qwen`、`openai`、`kimi`、`gemini` 等       |
+| `LLM_MODEL`     | 聊天模型名称。为空时，`qwen` 默认使用 `qwen3.6-plus`                                        |
+| `QWEN_API_KEY`  | Qwen/DashScope API Key                                                                      |
 | `QWEN_BASE_URL` | Qwen OpenAI-compatible endpoint，默认 `https://dashscope.aliyuncs.com/compatible-mode/v1` |
 
 ### Embedding
 
-| 变量 | 说明 |
-|---|---|
-| `EMBEDDING_PROVIDER` | dense embedding provider，默认 `qwen` |
-| `EMBEDDING_MODEL` | dense embedding 模型，默认 `text-embedding-v4` |
-| `EMBEDDING_API_KEY` | 可选。为空时复用 provider 对应 key，例如 `QWEN_API_KEY` |
-| `EMBEDDING_BASE_URL` | 可选。为空时复用 provider 对应 base url |
-| `DENSE_EMBEDDING_DIM` | dense 向量维度，当前为 `1024` |
+| 变量                    | 说明                                                      |
+| ----------------------- | --------------------------------------------------------- |
+| `EMBEDDING_PROVIDER`  | dense embedding provider，默认 `qwen`                   |
+| `EMBEDDING_MODEL`     | dense embedding 模型，默认 `text-embedding-v4`          |
+| `EMBEDDING_API_KEY`   | 可选。为空时复用 provider 对应 key，例如 `QWEN_API_KEY` |
+| `EMBEDDING_BASE_URL`  | 可选。为空时复用 provider 对应 base url                   |
+| `DENSE_EMBEDDING_DIM` | dense 向量维度，当前为 `1024`                           |
 
 ### Milvus
 
-| 变量 | 说明 |
-|---|---|
-| `MILVUS_URI` | Milvus Lite 文件路径或独立 Milvus URI。为空时使用 `backend/app/data/milvus/papernote.db` |
-| `MILVUS_COLLECTION` | 旧版 block collection 前缀，默认 `papernote_blocks` |
-| `AGENTIC_MILVUS_COLLECTION_PREFIX` | Agentic RAG collection 前缀，默认 `papernote_agentic_blocks` |
-| `MILVUS_GRPC_KEEPALIVE_TIME_MS` | gRPC keepalive 时间，默认 `120000` |
-| `MILVUS_GRPC_KEEPALIVE_TIMEOUT_MS` | gRPC keepalive timeout，默认 `20000` |
-| `MILVUS_GRPC_KEEPALIVE_PERMIT_WITHOUT_CALLS` | 是否允许无调用 keepalive，默认 `false` |
+| 变量                                           | 说明                                                                                       |
+| ---------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| `MILVUS_URI`                                 | Milvus Lite 文件路径或独立 Milvus URI。为空时使用 `backend/app/data/milvus/papernote.db` |
+| `MILVUS_COLLECTION`                          | 旧版 block collection 前缀，默认 `papernote_blocks`                                      |
+| `AGENTIC_MILVUS_COLLECTION_PREFIX`           | Agentic RAG collection 前缀，默认 `papernote_agentic_blocks`                             |
+| `MILVUS_GRPC_KEEPALIVE_TIME_MS`              | gRPC keepalive 时间，默认 `120000`                                                       |
+| `MILVUS_GRPC_KEEPALIVE_TIMEOUT_MS`           | gRPC keepalive timeout，默认 `20000`                                                     |
+| `MILVUS_GRPC_KEEPALIVE_PERMIT_WITHOUT_CALLS` | 是否允许无调用 keepalive，默认 `false`                                                   |
 
 ### Agentic RAG
 
-| 变量 | 默认值 | 说明 |
-|---|---:|---|
-| `AGENTIC_RAG_ENABLED` | `true` | 是否启用 Agentic RAG |
-| `BM25_STATE_PATH` | 空 | 本地 BM25 统计持久化路径，空时使用 `backend/app/data/bm25_state.json` |
-| `AUTO_MERGE_ENABLED` | `true` | 是否启用父块合并 |
-| `AUTO_MERGE_THRESHOLD` | `2` | 同父块命中数量达到该阈值时合并父块 |
-| `LEAF_RETRIEVE_LEVEL` | `3` | Milvus 只检索哪个层级，当前为 L3 |
-| `AGENTIC_CANDIDATE_MULTIPLIER` | `3` | 初召回候选倍数，`top_k=6` 时候选池为 `18` |
-| `RAG_GRADE_MODEL` | 空 | 证据评分模型。为空时复用 `LLM_MODEL` 或 provider 默认模型 |
-| `RAG_MAX_REWRITES` | `1` | 证据不足时最多重写检索几轮 |
-| `CONVERSATION_SUMMARY_TRIGGER_MESSAGES` | `12` | 预留的会话摘要触发阈值 |
+| 变量                                      |   默认值 | 说明                                                                    |
+| ----------------------------------------- | -------: | ----------------------------------------------------------------------- |
+| `AGENTIC_RAG_ENABLED`                   | `true` | 是否启用 Agentic RAG                                                    |
+| `BM25_STATE_PATH`                       |       空 | 本地 BM25 统计持久化路径，空时使用 `backend/app/data/bm25_state.json` |
+| `AUTO_MERGE_ENABLED`                    | `true` | 是否启用父块合并                                                        |
+| `AUTO_MERGE_THRESHOLD`                  |    `2` | 同父块命中数量达到该阈值时合并父块                                      |
+| `LEAF_RETRIEVE_LEVEL`                   |    `3` | Milvus 只检索哪个层级，当前为 L3                                        |
+| `AGENTIC_CANDIDATE_MULTIPLIER`          |    `3` | 初召回候选倍数，`top_k=6` 时候选池为 `18`                           |
+| `RAG_GRADE_MODEL`                       |       空 | 证据评分模型。为空时复用 `LLM_MODEL` 或 provider 默认模型             |
+| `RAG_MAX_REWRITES`                      |    `1` | 证据不足时最多重写检索几轮                                              |
+| `CONVERSATION_SUMMARY_TRIGGER_MESSAGES` |   `12` | 预留的会话摘要触发阈值                                                  |
+
+### Harness Agent / Research Tool / Context
+
+| 变量                                      | 默认值                         | 说明                                      |
+| ----------------------------------------- | ------------------------------ | ----------------------------------------- |
+| `ENABLE_RESEARCH_TOOL`                  | `true`                       | 是否允许 Agent 调用 Tavily Research 工具 |
+| `TAVILY_API_KEY`                        | 空                             | Tavily API Key                            |
+| `TAVILY_RESEARCH_ENDPOINT`              | `https://api.tavily.com/research` | Tavily Research API endpoint              |
+| `TAVILY_RESEARCH_MODEL`                 | `auto`                       | Research agent 模型，可选 `mini/pro/auto` |
+| `TAVILY_RESEARCH_CITATION_FORMAT`       | `numbered`                   | Research 报告引用格式                     |
+| `TAVILY_RESEARCH_MAX_POLLS`             | `8`                          | 创建任务后最多轮询次数                    |
+| `TAVILY_RESEARCH_POLL_INTERVAL_SECONDS` | `2`                          | Research 任务轮询间隔秒数                 |
+| `CONTEXT_MAX_TOKENS`                    | `5000`                       | GSSC ContextBuilder 最大上下文预算        |
+| `CONTEXT_RESERVE_RATIO`                 | `0.2`                        | 为系统策略预留的上下文比例                |
+| `NOTE_WORKSPACE_DIR`                    | 空                             | 结构化笔记存储目录，空时使用后端数据目录  |
+
+Research Tool 使用 Tavily `POST /research` 创建研究任务，并通过 `GET /research/{request_id}` 轮询结果。任务未及时完成时，系统会把 `request_id` 和 pending 状态注入上下文，而不是阻塞整个问答链路。
 
 ### Rerank
 
-| 变量 | 说明 |
-|---|---|
-| `RERANK_MODEL` | 默认 `qwen3-vl-rerank` |
-| `RERANK_BINDING_HOST` | DashScope rerank endpoint |
-| `RERANK_API_KEY` | rerank key，通常可复用 `${QWEN_API_KEY}` |
+| 变量                    | 说明                                       |
+| ----------------------- | ------------------------------------------ |
+| `RERANK_MODEL`        | 默认 `qwen3-vl-rerank`                   |
+| `RERANK_BINDING_HOST` | DashScope rerank endpoint                  |
+| `RERANK_API_KEY`      | rerank key，通常可复用 `${QWEN_API_KEY}` |
 
 Rerank 是可选增强。任意一个 rerank 变量为空时，系统会跳过 rerank，基础 RAG 仍可运行。
 
 ### MinerU 和多模态
 
-| 变量 | 默认值 | 说明 |
-|---|---:|---|
-| `MINERU_API_KEY` | 空 | MinerU API Key |
-| `MINERU_MODEL_VERSION` | `vlm` | MinerU 模型版本 |
-| `MINERU_LANGUAGE` | `ch` | MinerU 解析语言 |
-| `ENABLE_MINERU_FIGURE_CROPS` | `true` | 是否启用论文正文 Figure 裁剪 |
-| `DELETE_MINERU_RAW_IMAGES_AFTER_FIGURE_CROPS` | `true` | 合并 Figure 后是否删除原始 parsed/images，节省空间 |
-| `FIGURE_CROP_DPI` | `220` | Figure 裁剪 DPI |
-| `FIGURE_CROP_PADDING` | `0.012` | Figure 裁剪边距 |
-| `ENABLE_MULTIMODAL_ANSWERS` | `true` | 回答时是否向多模态模型传图片证据 |
-| `MULTIMODAL_ANSWER_IMAGE_LIMIT` | `4` | 单次回答最多传入多少张图片 |
-| `ENABLE_MULTIMODAL_ENRICHMENT` | `true` | 索引时是否生成图片/表格/公式语义元数据 |
-| `MULTIMODAL_ENRICHMENT_LLM_LIMIT` | `8` | 索引时最多调用多少个多模态 block 的 LLM/VLM 增强 |
+| 变量                                            |    默认值 | 说明                                               |
+| ----------------------------------------------- | --------: | -------------------------------------------------- |
+| `MINERU_API_KEY`                              |        空 | MinerU API Key                                     |
+| `MINERU_MODEL_VERSION`                        |   `vlm` | MinerU 模型版本                                    |
+| `MINERU_LANGUAGE`                             |    `ch` | MinerU 解析语言                                    |
+| `ENABLE_MINERU_FIGURE_CROPS`                  |  `true` | 是否启用论文正文 Figure 裁剪                       |
+| `DELETE_MINERU_RAW_IMAGES_AFTER_FIGURE_CROPS` |  `true` | 合并 Figure 后是否删除原始 parsed/images，节省空间 |
+| `FIGURE_CROP_DPI`                             |   `220` | Figure 裁剪 DPI                                    |
+| `FIGURE_CROP_PADDING`                         | `0.012` | Figure 裁剪边距                                    |
+| `ENABLE_MULTIMODAL_ANSWERS`                   |  `true` | 回答时是否向多模态模型传图片证据                   |
+| `MULTIMODAL_ANSWER_IMAGE_LIMIT`               |     `4` | 单次回答最多传入多少张图片                         |
+| `ENABLE_MULTIMODAL_ENRICHMENT`                |  `true` | 索引时是否生成图片/表格/公式语义元数据             |
+| `MULTIMODAL_ENRICHMENT_LLM_LIMIT`             |     `8` | 索引时最多调用多少个多模态 block 的 LLM/VLM 增强   |
 
 ## 后端技术路线
 
@@ -337,31 +341,23 @@ backend/app/data/uploads/{paper_id}/parsed/knowledge_graph.json
 
 ```text
 router
--> retrieve_initial
--> grade_documents
+-> tool_planner
+-> run_tools
+-> build_context
 -> answer_agentic
 ```
 
-如果证据不足：
-
-```text
-router
--> retrieve_initial
--> grade_documents
--> rewrite_question
--> retrieve_expanded
--> answer_agentic
-```
+其中 `router` 保留 LLM 意图分类；`tool_planner` 决定是否调用 `paper_rag`、`tavily_research` 和 `note_tool`；`build_context` 使用 GSSC 流水线构造最终 prompt。
 
 ### 1. 三级分块
 
 Agentic RAG 会对每个 PaperNote block 再做三级滑动窗口切分：
 
-| 层级 | chunk 大小 | overlap | 作用 |
-|---|---:|---:|---|
-| L1 | 2600 字符 | 320 字符 | 大父块，只存本地 JSON DocStore |
-| L2 | 1300 字符 | 180 字符 | 中父块，只存本地 JSON DocStore |
-| L3 | 650 字符 | 90 字符 | 叶子块，写入 Milvus 做检索 |
+| 层级 | chunk 大小 |  overlap | 作用                           |
+| ---- | ---------: | -------: | ------------------------------ |
+| L1   |  2600 字符 | 320 字符 | 大父块，只存本地 JSON DocStore |
+| L2   |  1300 字符 | 180 字符 | 中父块，只存本地 JSON DocStore |
+| L3   |   650 字符 |  90 字符 | 叶子块，写入 Milvus 做检索     |
 
 切分时会尽量在换行、中文句号、英文句号和空格处断开，避免直接切断句子。
 
@@ -419,7 +415,14 @@ sparse_embedding: SPARSE_FLOAT_VECTOR + IP
     "messages": history,
     "question": req.content,
     "paper_id": req.paper_id,
+    "conversation_id": req.conversation_id,
     "route": None,
+    "tool_plan": {},
+    "tool_results": [],
+    "built_context": "",
+    "context_stats": {},
+    "research_results": [],
+    "notes": [],
     "context": [],
     "docs": [],
     "rag_trace": {},
@@ -435,9 +438,20 @@ Router prompt 会把请求分成：
 - `summarize`：总结、概述、主要贡献。
 - `chat`：闲聊或非论文内容。
 
+随后 Tool Planner 会输出结构化计划：
+
+```text
+use_rag: 是否调用论文 RAG 工具
+use_research: 是否调用 Tavily Research 工具
+use_notes: 是否检索持久化笔记
+write_note: 是否把本轮结论写入结构化笔记
+rag_query / research_query / note_query
+answer_mode: paper_qa / summary / research_augmented / chat
+```
+
 ### 4. Hybrid Search
 
-`retrieve_initial_node` 默认调用：
+当 `use_rag=true` 时，`paper_rag` 工具调用：
 
 ```python
 vector_store.agentic_retrieve(paper_id, query, top_k=6)
@@ -542,25 +556,23 @@ AUTO_MERGE_THRESHOLD=2
 - 初始检索用 L3 小块，保证召回精准。
 - 最终回答需要上下文时，再合并回 L2/L1，避免证据过碎。
 
-### 7. Grader 和 Rewrite
+### 7. Harness Tools 和 GSSC ContextBuilder
 
-检索后的 sources 会进入 `grade_documents_node`。Grader 会判断证据是否足以回答问题：
+`run_tools` 会按照 Tool Planner 的计划调用工具：
 
 ```text
-yes -> answer_agentic
-no -> rewrite_question
+paper_rag        -> 论文内部证据，引用标记 [S#]
+tavily_research -> 外部研究报告和来源，引用标记 [R#]
+note_tool        -> 持久化结构化笔记，引用标记 [N#]
 ```
 
-重写策略包括：
+工具结果随后进入 `ContextBuilder` 的 GSSC 流水线：
 
-- `step_back`：把具体问题抽象为更高层问题，再扩展检索。
-- `hyde`：生成一段假设性论文片段，作为扩展 query。
-- `complex`：同时使用 step-back 和 HyDE。
-
-当前最多重写一轮：
-
-```env
-RAG_MAX_REWRITES=1
+```text
+Gather    -> 汇集系统策略、用户任务、工具结果、历史对话、笔记
+Select    -> 按相关性 + 新近性选择高价值信息包
+Structure -> 组织为 [Role & Policies] / [Task] / [State] / [Evidence] / [Context] / [Output]
+Compress  -> 超出 token 预算时按分区兜底压缩
 ```
 
 ### 8. Answer 生成
@@ -572,6 +584,8 @@ Answer the user's question using only the provided evidence.
 Answer in the same language as the user's question.
 If evidence is insufficient, say so directly.
 Cite evidence with markers like [S1], [S2].
+If Tavily Research evidence is used, cite [R1], [R2].
+If persistent notes are used, cite [N1], [N2].
 Mention figures, tables, equations, and pages when relevant.
 ```
 
@@ -607,40 +621,40 @@ flowchart TD
 
 ### Paper
 
-| Method | Path | 说明 |
-|---|---|---|
-| `POST` | `/api/papers/upload` | 上传 PDF 并后台解析索引 |
-| `GET` | `/api/papers` | 获取论文列表 |
-| `GET` | `/api/papers/{paper_id}` | 获取论文详情、摘要、关键词和会话 |
-| `GET` | `/api/papers/{paper_id}/pdf` | 获取 PDF 文件 |
-| `GET` | `/api/papers/{paper_id}/assets/{asset_path}` | 获取解析出的图片等资源 |
-| `GET` | `/api/papers/{paper_id}/knowledge-graph` | 获取本地知识图谱 |
-| `DELETE` | `/api/papers/{paper_id}` | 删除论文及相关数据 |
+| Method     | Path                                           | 说明                             |
+| ---------- | ---------------------------------------------- | -------------------------------- |
+| `POST`   | `/api/papers/upload`                         | 上传 PDF 并后台解析索引          |
+| `GET`    | `/api/papers`                                | 获取论文列表                     |
+| `GET`    | `/api/papers/{paper_id}`                     | 获取论文详情、摘要、关键词和会话 |
+| `GET`    | `/api/papers/{paper_id}/pdf`                 | 获取 PDF 文件                    |
+| `GET`    | `/api/papers/{paper_id}/assets/{asset_path}` | 获取解析出的图片等资源           |
+| `GET`    | `/api/papers/{paper_id}/knowledge-graph`     | 获取本地知识图谱                 |
+| `DELETE` | `/api/papers/{paper_id}`                     | 删除论文及相关数据               |
 
 ### Chat
 
-| Method | Path | 说明 |
-|---|---|---|
-| `POST` | `/api/conversations` | 创建论文会话 |
-| `GET` | `/api/conversations/{conversation_id}/messages` | 获取历史消息 |
-| `POST` | `/api/chat/stream` | SSE 流式 Agentic RAG 问答 |
-| `POST` | `/api/chat` | 非流式问答 |
-| `PUT` | `/api/papers/{paper_id}/conversations/{conversation_id}/title` | 更新会话标题 |
+| Method   | Path                                                             | 说明                      |
+| -------- | ---------------------------------------------------------------- | ------------------------- |
+| `POST` | `/api/conversations`                                           | 创建论文会话              |
+| `GET`  | `/api/conversations/{conversation_id}/messages`                | 获取历史消息              |
+| `POST` | `/api/chat/stream`                                             | SSE 流式 Agentic RAG 问答 |
+| `POST` | `/api/chat`                                                    | 非流式问答                |
+| `PUT`  | `/api/papers/{paper_id}/conversations/{conversation_id}/title` | 更新会话标题              |
 
 ### Annotation
 
-| Method | Path | 说明 |
-|---|---|---|
-| `GET` | `/api/papers/{paper_id}/annotations` | 获取标注 |
-| `POST` | `/api/papers/{paper_id}/annotations` | 新建高亮或笔记 |
-| `DELETE` | `/api/papers/{paper_id}/annotations/{annotation_id}` | 删除标注 |
+| Method     | Path                                                   | 说明           |
+| ---------- | ------------------------------------------------------ | -------------- |
+| `GET`    | `/api/papers/{paper_id}/annotations`                 | 获取标注       |
+| `POST`   | `/api/papers/{paper_id}/annotations`                 | 新建高亮或笔记 |
+| `DELETE` | `/api/papers/{paper_id}/annotations/{annotation_id}` | 删除标注       |
 
 ### Settings
 
-| Method | Path | 说明 |
-|---|---|---|
-| `GET` | `/api/settings` | 获取当前模型设置 |
-| `POST` | `/api/settings` | 更新模型设置 |
+| Method   | Path              | 说明             |
+| -------- | ----------------- | ---------------- |
+| `GET`  | `/api/settings` | 获取当前模型设置 |
+| `POST` | `/api/settings` | 更新模型设置     |
 
 ## 前端交互说明
 
@@ -699,17 +713,15 @@ backend/app/data/bm25_state.json              # BM25 sparse 统计
 后端编译检查：
 
 ```bash
-cd /Users/marc/code_projects/PaperNote
-PYTHONPYCACHEPREFIX=/tmp/python-cache \
-  /Users/marc/miniconda3/envs/paper-note/bin/python -m compileall backend/app backend/tests
+cd /PaperNote
+python -m compileall backend/app backend/tests
 ```
 
 Agentic RAG 最小测试：
 
 ```bash
-cd /Users/marc/code_projects/PaperNote
-PYTHONPATH=backend PYTHONPYCACHEPREFIX=/tmp/python-cache \
-  /Users/marc/miniconda3/envs/paper-note/bin/python backend/tests/test_agentic_rag.py
+cd /PaperNote
+python backend/tests/test_agentic_rag.py
 ```
 
 前端构建：
@@ -770,13 +782,3 @@ MILVUS_GRPC_KEEPALIVE_PERMIT_WITHOUT_CALLS=false
 - 为 query 增加英文术语扩展。
 - 引入中文分词器替换当前单字 BM25。
 - 增强 HyDE 和 step-back rewrite。
-
-## 进一步文档
-
-本地调试文档：
-
-```text
-docs/agentic_rag_query_walkthrough.md
-```
-
-该文档用已上传论文和 query `这个论文用了什么开源数据集` 展示了完整 Agentic RAG 链路，包括真实运行 trace、命中 sources、rerank 分数和最终回答。

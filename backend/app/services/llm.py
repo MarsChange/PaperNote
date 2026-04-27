@@ -11,15 +11,15 @@ from app.core.config import settings
 
 # Provider → (base_url_setting, api_key_setting, default_model)
 PROVIDER_CONFIG = {
-    "openai": ("openai_base_url", "openai_api_key", "gpt-4o"),
+    "openai": ("openai_base_url", "openai_api_key", "gpt-5.4"),
     "anthropic": (
-        "openai_base_url",
+        "anthropic_base_url",
         "anthropic_api_key",
         "claude-sonnet-4-20250514",
     ),
-    "qwen": ("qwen_base_url", "qwen_api_key", "qwen-max"),
-    "kimi": ("kimi_base_url", "kimi_api_key", "moonshot-v1-128k"),
-    "gemini": ("gemini_base_url", "gemini_api_key", "gemini-2.0-flash"),
+    "qwen": ("qwen_base_url", "qwen_api_key", "qwen3.6-plus"),
+    "kimi": ("kimi_base_url", "kimi_api_key", "kimi-k2.6"),
+    "gemini": ("gemini_base_url", "gemini_api_key", "gemini-3.1-flash"),
 }
 
 

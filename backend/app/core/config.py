@@ -87,10 +87,43 @@ class Settings(BaseSettings):
         os.getenv("CONVERSATION_SUMMARY_TRIGGER_MESSAGES", "12")
     )
 
+    # Harness agent tools and context engineering
+    enable_research_tool: bool = (
+        os.getenv("ENABLE_RESEARCH_TOOL", os.getenv("ENABLE_WEB_SEARCH", "true")).lower()
+        == "true"
+    )
+    tavily_api_key: str = os.getenv("TAVILY_API_KEY", "")
+    tavily_research_endpoint: str = os.getenv(
+        "TAVILY_RESEARCH_ENDPOINT",
+        os.getenv("TAVILY_SEARCH_ENDPOINT", "https://api.tavily.com/research"),
+    )
+    tavily_research_model: str = os.getenv("TAVILY_RESEARCH_MODEL", "auto")
+    tavily_research_citation_format: str = os.getenv(
+        "TAVILY_RESEARCH_CITATION_FORMAT", "numbered"
+    )
+    tavily_research_max_polls: int = int(os.getenv("TAVILY_RESEARCH_MAX_POLLS", "8"))
+    tavily_research_poll_interval_seconds: float = float(
+        os.getenv("TAVILY_RESEARCH_POLL_INTERVAL_SECONDS", "2")
+    )
+    context_max_tokens: int = int(os.getenv("CONTEXT_MAX_TOKENS", "5000"))
+    context_reserve_ratio: float = float(os.getenv("CONTEXT_RESERVE_RATIO", "0.2"))
+    context_min_relevance: float = float(os.getenv("CONTEXT_MIN_RELEVANCE", "0.1"))
+    context_enable_compression: bool = (
+        os.getenv("CONTEXT_ENABLE_COMPRESSION", "true").lower() == "true"
+    )
+    context_recency_weight: float = float(os.getenv("CONTEXT_RECENCY_WEIGHT", "0.3"))
+    context_relevance_weight: float = float(
+        os.getenv("CONTEXT_RELEVANCE_WEIGHT", "0.7")
+    )
+    note_workspace_dir: Path = Path(
+        os.getenv("NOTE_WORKSPACE_DIR") or base_dir / "data" / "notes"
+    )
+
     # API Keys (set via environment variables)
     openai_api_key: str = os.getenv("OPENAI_API_KEY", "")
     openai_base_url: str = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
     anthropic_api_key: str = os.getenv("ANTHROPIC_API_KEY", "")
+    anthropic_base_url: str = os.getenv("ANTHROPIC_BASE_URL", "")
     qwen_api_key: str = os.getenv("QWEN_API_KEY", "")
     qwen_base_url: str = os.getenv(
         "QWEN_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"
@@ -129,3 +162,4 @@ settings = Settings()
 # Ensure directories exist
 settings.upload_dir.mkdir(parents=True, exist_ok=True)
 settings.milvus_dir.mkdir(parents=True, exist_ok=True)
+settings.note_workspace_dir.mkdir(parents=True, exist_ok=True)

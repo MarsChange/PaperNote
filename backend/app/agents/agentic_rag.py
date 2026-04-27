@@ -4,21 +4,29 @@ from __future__ import annotations
 
 from typing import Any, Literal, Optional
 
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langgraph.graph import END, StateGraph
 from pydantic import BaseModel, Field
 
 from app.agents.generator import (
     RAG_PROMPT,
     SUMMARIZE_PROMPT,
+    _missing_model_message,
     _invoke_with_fallback,
     _sanitize_sources,
+    _to_data_url,
     answer_chat_node,
 )
-from app.agents.router import route_decision, router_node
+from app.agents.router import router_node
 from app.agents.state import AgentState
 from app.core.config import settings
 from app.services.agentic_runtime import emit_rag_step
+from app.services.context_builder import ContextBuilder, ContextConfig
+from app.services.harness_tools import (
+    note_memory_tool,
+    paper_rag_tool,
+    tavily_research_tool,
+)
 from app.services.llm import get_llm
 from app.services.vector_store import vector_store
 
@@ -31,12 +39,68 @@ class RewriteStrategy(BaseModel):
     strategy: Literal["step_back", "hyde", "complex"]
 
 
+class ToolPlan(BaseModel):
+    use_rag: bool = Field(
+        default=False,
+        description="Call paper_rag when the question needs evidence from the uploaded paper.",
+    )
+    use_research: bool = Field(
+        default=False,
+        description="Call tavily_research when external, current, or broader research evidence is needed.",
+    )
+    use_notes: bool = Field(
+        default=True,
+        description="Search persistent notes for cross-turn or cross-session memory.",
+    )
+    write_note: bool = Field(
+        default=False,
+        description="Persist a structured note when the user asks to remember or the answer is a durable conclusion/action.",
+    )
+    rag_query: str = Field(default="", description="Query for the paper_rag tool.")
+    research_query: str = Field(default="", description="Task for Tavily Research.")
+    note_query: str = Field(default="", description="Query for NoteTool search.")
+    answer_mode: Literal["paper_qa", "summary", "research_augmented", "chat"] = "paper_qa"
+    rationale: str = Field(default="", description="Short reason for tool selection.")
+
+
 GRADE_PROMPT = (
     "You are a grader assessing relevance of retrieved paper evidence to a user question.\n"
     "Retrieved evidence:\n\n{context}\n\n"
     "User question: {question}\n"
     "Return yes if the evidence can answer or materially help answer the question; otherwise return no."
 )
+
+TOOL_PLANNER_PROMPT = """You are a tool planner for a paper-reading harness agent.
+
+The LLM router already selected route: {route}.
+Available tools:
+- paper_rag: search the uploaded paper through PaperNote's Agentic RAG and Milvus/BM25 retriever.
+- tavily_research: create a Tavily Research task when the answer needs external, current, or broader information beyond the paper.
+- note_tool: search or write persistent Markdown notes for cross-turn memory.
+
+Decide which tools are needed for the next answer.
+Rules:
+- Use paper_rag for questions about the uploaded paper, figures, tables, methods, datasets, experiments, equations, or paper summary.
+- Use tavily_research only when the user asks for latest/current information, asks to compare with outside work, asks for URLs/background not guaranteed to be in the paper, or the paper evidence alone is insufficient by nature.
+- Use note_tool by default for continuity.
+- Set write_note only when the user asks to remember/save/note something, or when the turn produces a durable research conclusion or action item worth persisting.
+- Do not call Tavily Research for ordinary paper-content questions unless outside evidence is explicitly needed.
+
+User question:
+{question}
+"""
+
+HARNESS_SYSTEM_PROMPT = """You are PaperNote's harness-engineering agent.
+You receive a structured GSSC context with role policies, task, state, evidence, memory, and output constraints.
+
+Answer rules:
+- Answer in the same language as the user's question.
+- Ground paper claims in paper evidence and cite [S1], [S2] when available.
+- Ground external research claims in Tavily Research evidence and cite [R1], [R2] when available.
+- If persistent notes are used, cite [N1], [N2].
+- Do not invent missing evidence. If evidence is insufficient, say what is missing and what tool result would be needed.
+- Keep the answer direct and useful for paper reading.
+"""
 
 
 async def retrieve_initial_node(state: AgentState) -> dict[str, Any]:
@@ -236,13 +300,168 @@ async def retrieve_summary_node(state: AgentState) -> dict[str, Any]:
     return {"context": sources, "sources": sources, "rag_trace": rag_trace}
 
 
-async def answer_agentic_node(state: AgentState) -> dict[str, Any]:
-    answer = await _invoke_with_fallback(
-        RAG_PROMPT,
-        state["question"],
-        state.get("messages", []),
-        state.get("context", []),
+async def tool_planner_node(state: AgentState) -> dict[str, Any]:
+    question = state["question"]
+    route = state.get("route") or "rag"
+    emit_rag_step("🧭", "LLM Router 已完成，正在规划工具", f"route={route}")
+    plan = _fallback_tool_plan(question, route)
+    try:
+        llm = get_llm(streaming=False, temperature=0)
+        planner = llm.with_structured_output(ToolPlan)
+        response = await planner.ainvoke(
+            [
+                SystemMessage(
+                    content=TOOL_PLANNER_PROMPT.format(route=route, question=question)
+                )
+            ]
+        )
+        plan = response.model_dump()
+    except Exception:
+        pass
+
+    plan = _normalize_tool_plan(plan, question, route)
+    emit_rag_step(
+        "🧰",
+        "工具规划完成",
+        (
+            f"RAG={plan['use_rag']}，Research={plan['use_research']}，"
+            f"Notes={plan['use_notes']}"
+        ),
     )
+    rag_trace = dict(state.get("rag_trace") or {})
+    rag_trace.update({"route": route, "tool_plan": plan})
+    return {"tool_plan": plan, "rag_trace": rag_trace}
+
+
+async def run_tools_node(state: AgentState) -> dict[str, Any]:
+    question = state["question"]
+    paper_id = state.get("paper_id", "")
+    conversation_id = state.get("conversation_id", "")
+    plan = _normalize_tool_plan(state.get("tool_plan") or {}, question, state.get("route") or "rag")
+    tool_results: list[dict[str, Any]] = []
+    sources: list[dict[str, Any]] = []
+    docs: list[dict[str, Any]] = []
+    research_results: list[dict[str, Any]] = []
+    notes: list[dict[str, Any]] = []
+
+    if plan.get("use_notes"):
+        emit_rag_step("🗒️", "检索持久化笔记", (plan.get("note_query") or question)[:80])
+        note_result = note_memory_tool.search(
+            query=plan.get("note_query") or question,
+            paper_id=paper_id,
+            conversation_id=conversation_id,
+            limit=5,
+        )
+        notes = note_result.get("notes", [])
+        tool_results.append(note_result)
+
+    if plan.get("use_rag"):
+        rag_query = plan.get("rag_query") or question
+        mode = "summary" if plan.get("answer_mode") == "summary" else "qa"
+        emit_rag_step("🔍", "调用论文 RAG 工具", rag_query[:80])
+        rag_result = paper_rag_tool.run(
+            paper_id=paper_id,
+            query=rag_query,
+            top_k=6,
+            mode=mode,
+        )
+        tool_results.append(rag_result)
+        sources = rag_result.get("sources", []) or []
+        docs = rag_result.get("docs", []) or []
+        meta = rag_result.get("meta", {}) or {}
+        emit_rag_step(
+            "🧱",
+            "论文 RAG 工具完成",
+            (
+                f"模式: {meta.get('retrieval_mode', 'unknown')}，"
+                f"证据: {len(sources)}，候选: {meta.get('candidate_k', len(sources))}"
+            ),
+        )
+
+    if plan.get("use_research"):
+        research_query = plan.get("research_query") or question
+        emit_rag_step("🌐", "调用 Tavily Research 工具", research_query[:80])
+        research_result = tavily_research_tool.run(query=research_query)
+        research_results = research_result.get("sources", []) or []
+        tool_results.append(research_result)
+        emit_rag_step(
+            "🌐",
+            "Research 工具完成",
+            f"状态: {research_result.get('status')}，来源: {len(research_results)}",
+        )
+
+    if not tool_results:
+        emit_rag_step("💬", "无需外部工具", "直接基于对话上下文回答")
+
+    rag_trace = dict(state.get("rag_trace") or {})
+    rag_trace.update(
+        {
+            "tool_results": _tool_result_summary(tool_results),
+            "retrieved_chunks": sources,
+            "research_results": research_results,
+            "notes": notes,
+        }
+    )
+    return {
+        "tool_results": tool_results,
+        "context": sources,
+        "sources": sources,
+        "docs": docs,
+        "research_results": research_results,
+        "notes": notes,
+        "rag_trace": rag_trace,
+    }
+
+
+async def build_context_node(state: AgentState) -> dict[str, Any]:
+    emit_rag_step("🧩", "构建 GSSC 上下文", "Gather -> Select -> Structure -> Compress")
+    builder = ContextBuilder(
+        ContextConfig(
+            max_tokens=settings.context_max_tokens,
+            reserve_ratio=settings.context_reserve_ratio,
+            min_relevance=settings.context_min_relevance,
+            enable_compression=settings.context_enable_compression,
+            recency_weight=settings.context_recency_weight,
+            relevance_weight=settings.context_relevance_weight,
+        )
+    )
+    built = builder.build(
+        user_query=state["question"],
+        conversation_history=state.get("messages", []),
+        system_instructions=_harness_role_policy(),
+        state_summary=_harness_state_summary(state),
+        tool_results=state.get("tool_results", []),
+        output_instructions=_harness_output_instructions(state),
+    )
+    emit_rag_step(
+        "📦",
+        "上下文构建完成",
+        (
+            f"选择 {built.stats['selected_packets']}/{built.stats['gathered_packets']} 个信息包，"
+            f"{built.stats['token_count']}/{built.stats['max_tokens']} tokens"
+        ),
+    )
+    rag_trace = dict(state.get("rag_trace") or {})
+    rag_trace.update({"context_builder": built.stats})
+    return {
+        "built_context": built.context,
+        "context_stats": built.stats,
+        "rag_trace": rag_trace,
+    }
+
+
+async def answer_agentic_node(state: AgentState) -> dict[str, Any]:
+    if not state.get("built_context"):
+        answer = await _invoke_with_fallback(
+            RAG_PROMPT,
+            state["question"],
+            state.get("messages", []),
+            state.get("context", []),
+        )
+    else:
+        answer = await _invoke_harness_answer(state)
+        _maybe_write_interaction_note(state, answer)
+
     sources = _sanitize_sources(state.get("context", []))
     return {
         "answer": answer,
@@ -275,41 +494,216 @@ def grade_route(state: AgentState) -> str:
 def build_agentic_graph():
     graph = StateGraph(AgentState)
     graph.add_node("router", router_node)
-    graph.add_node("retrieve_initial", retrieve_initial_node)
-    graph.add_node("grade_documents", grade_documents_node)
-    graph.add_node("rewrite_question", rewrite_question_node)
-    graph.add_node("retrieve_expanded", retrieve_expanded_node)
+    graph.add_node("tool_planner", tool_planner_node)
+    graph.add_node("run_tools", run_tools_node)
+    graph.add_node("build_context", build_context_node)
     graph.add_node("answer_agentic", answer_agentic_node)
-    graph.add_node("retrieve_summary", retrieve_summary_node)
-    graph.add_node("answer_summary_agentic", answer_summary_node)
-    graph.add_node("answer_chat", answer_chat_node)
 
     graph.set_entry_point("router")
-    graph.add_conditional_edges(
-        "router",
-        route_decision,
-        {
-            "rag": "retrieve_initial",
-            "summarize": "retrieve_summary",
-            "chat": "answer_chat",
-        },
-    )
-    graph.add_edge("retrieve_initial", "grade_documents")
-    graph.add_conditional_edges(
-        "grade_documents",
-        grade_route,
-        {
-            "generate_answer": "answer_agentic",
-            "rewrite_question": "rewrite_question",
-        },
-    )
-    graph.add_edge("rewrite_question", "retrieve_expanded")
-    graph.add_edge("retrieve_expanded", "answer_agentic")
+    graph.add_edge("router", "tool_planner")
+    graph.add_edge("tool_planner", "run_tools")
+    graph.add_edge("run_tools", "build_context")
+    graph.add_edge("build_context", "answer_agentic")
     graph.add_edge("answer_agentic", END)
-    graph.add_edge("retrieve_summary", "answer_summary_agentic")
-    graph.add_edge("answer_summary_agentic", END)
-    graph.add_edge("answer_chat", END)
     return graph.compile()
+
+
+def _fallback_tool_plan(question: str, route: str) -> dict[str, Any]:
+    needs_research = _question_needs_research(question)
+    asks_note = any(
+        token in question.lower()
+        for token in ("记住", "记录", "做笔记", "保存", "note", "remember", "save")
+    )
+    answer_mode = "summary" if route == "summarize" else "paper_qa"
+    if route == "chat" and needs_research:
+        answer_mode = "research_augmented"
+    elif route == "chat":
+        answer_mode = "chat"
+    return {
+        "use_rag": route in {"rag", "summarize"},
+        "use_research": needs_research,
+        "use_notes": True,
+        "write_note": asks_note,
+        "rag_query": question,
+        "research_query": question,
+        "note_query": question,
+        "answer_mode": answer_mode,
+        "rationale": "fallback heuristic",
+    }
+
+
+def _normalize_tool_plan(plan: dict[str, Any], question: str, route: str) -> dict[str, Any]:
+    fallback = _fallback_tool_plan(question, route)
+    normalized = {**fallback, **(plan or {})}
+    normalized["use_rag"] = bool(normalized.get("use_rag")) or route in {
+        "rag",
+        "summarize",
+    }
+    if "use_web_search" in normalized and "use_research" not in plan:
+        normalized["use_research"] = bool(normalized.get("use_web_search"))
+    normalized["use_research"] = bool(normalized.get("use_research"))
+    normalized["use_notes"] = bool(normalized.get("use_notes", True))
+    normalized["write_note"] = bool(normalized.get("write_note"))
+    normalized["rag_query"] = str(normalized.get("rag_query") or question)
+    if "web_query" in normalized and "research_query" not in plan:
+        normalized["research_query"] = normalized.get("web_query")
+    normalized["research_query"] = str(normalized.get("research_query") or question)
+    normalized["note_query"] = str(normalized.get("note_query") or question)
+    if normalized.get("answer_mode") not in {
+        "paper_qa",
+        "summary",
+        "research_augmented",
+        "chat",
+    }:
+        normalized["answer_mode"] = fallback["answer_mode"]
+    if route == "summarize":
+        normalized["answer_mode"] = "summary"
+    return normalized
+
+
+def _question_needs_research(question: str) -> bool:
+    normalized = question.lower()
+    research_markers = (
+        "联网",
+        "搜索",
+        "最新",
+        "最近",
+        "今天",
+        "现在",
+        "新闻",
+        "官网",
+        "链接",
+        "url",
+        "web",
+        "search",
+        "latest",
+        "recent",
+        "current",
+        "today",
+        "compare with",
+        "outside",
+    )
+    return any(marker in normalized for marker in research_markers)
+
+
+def _tool_result_summary(tool_results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    summary = []
+    for result in tool_results:
+        summary.append(
+            {
+                "tool": result.get("tool"),
+                "status": result.get("status"),
+                "query": result.get("query"),
+                "meta": result.get("meta", {}),
+                "source_count": len(result.get("sources", []) or []),
+                "result_count": len(result.get("results", []) or []),
+                "note_count": len(result.get("notes", []) or []),
+            }
+        )
+    return summary
+
+
+def _harness_role_policy() -> str:
+    return (
+        "You are PaperNote's paper-reading harness agent. Use the available tool "
+        "results rather than guessing. Paper evidence uses [S#], Tavily Research "
+        "evidence uses [R#], persistent notes use [N#]. Keep claims faithful to the cited source."
+    )
+
+
+def _harness_state_summary(state: AgentState) -> str:
+    plan = state.get("tool_plan") or {}
+    return "\n".join(
+        [
+            f"paper_id: {state.get('paper_id', '')}",
+            f"conversation_id: {state.get('conversation_id', '')}",
+            f"router_route: {state.get('route', '')}",
+            f"answer_mode: {plan.get('answer_mode', '')}",
+            f"tool_plan: {plan}",
+        ]
+    )
+
+
+def _harness_output_instructions(state: AgentState) -> str:
+    plan = state.get("tool_plan") or {}
+    if plan.get("answer_mode") == "summary":
+        return (
+            "Produce a structured paper summary covering objective, method, findings, "
+            "limitations, and useful reading notes. Cite [S#] where possible."
+        )
+    return (
+        "Answer the user's question directly. If paper evidence was used, cite [S#]. "
+        "If Tavily Research evidence was used, cite [R#]. If persistent notes were used, cite [N#]. "
+        "If evidence is insufficient, state that explicitly and avoid speculation."
+    )
+
+
+async def _invoke_harness_answer(state: AgentState) -> str:
+    try:
+        llm = get_llm(streaming=True)
+    except Exception:
+        return _missing_model_message(state["question"])
+
+    user_message = _build_harness_user_message(
+        state.get("built_context", ""),
+        state.get("context", []),
+    )
+    messages = [SystemMessage(content=HARNESS_SYSTEM_PROMPT), user_message]
+    try:
+        response = await llm.ainvoke(messages)
+        return str(response.content)
+    except Exception:
+        fallback_response = await llm.ainvoke(
+            [
+                SystemMessage(content=HARNESS_SYSTEM_PROMPT),
+                HumanMessage(content=state.get("built_context", "")),
+            ]
+        )
+        return str(fallback_response.content)
+
+
+def _build_harness_user_message(context: str, sources: list[dict[str, Any]]) -> HumanMessage:
+    content: Any = context
+    if settings.enable_multimodal_answers:
+        parts: list[dict[str, Any]] = [{"type": "text", "text": context}]
+        image_limit = max(settings.multimodal_answer_image_limit, 0)
+        image_count = 0
+        for source_index, source in enumerate(sources, start=1):
+            if image_count >= image_limit:
+                break
+            if source.get("type") != "image":
+                continue
+            data_url = _to_data_url(str(source.get("asset_path", "")))
+            if not data_url:
+                continue
+            parts.append(
+                {
+                    "type": "text",
+                    "text": f"Visual paper evidence [S{source_index}] "
+                    f"{source.get('title') or source.get('id') or 'image'}",
+                }
+            )
+            parts.append({"type": "image_url", "image_url": {"url": data_url}})
+            image_count += 1
+        if len(parts) > 1:
+            content = parts
+    return HumanMessage(content=content)
+
+
+def _maybe_write_interaction_note(state: AgentState, answer: str):
+    plan = state.get("tool_plan") or {}
+    if not plan.get("write_note") or not answer.strip():
+        return
+    try:
+        note_memory_tool.create_interaction_note(
+            question=state["question"],
+            answer=answer,
+            paper_id=state.get("paper_id", ""),
+            conversation_id=state.get("conversation_id", ""),
+            tags=["auto", str(plan.get("answer_mode") or "conversation")],
+        )
+    except Exception:
+        pass
 
 
 async def _choose_rewrite_strategy(question: str) -> str:

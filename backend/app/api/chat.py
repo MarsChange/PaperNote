@@ -184,7 +184,14 @@ async def chat_stream(req: SendMessageRequest, request: Request):
             "messages": history,
             "question": req.content,
             "paper_id": req.paper_id,
+            "conversation_id": req.conversation_id,
             "route": None,
+            "tool_plan": {},
+            "tool_results": [],
+            "built_context": "",
+            "context_stats": {},
+            "research_results": [],
+            "notes": [],
             "context": [],
             "docs": [],
             "rag_trace": {},
@@ -215,8 +222,17 @@ async def chat_stream(req: SendMessageRequest, request: Request):
                         if isinstance(output, dict):
                             final_sources = output.get("sources", []) or []
                             final_trace = output.get("rag_trace", {}) or final_trace
+                            answer_text = output.get("answer", "")
+                            if answer_text and not full_answer:
+                                full_answer = answer_text
+                                await output_queue.put(
+                                    {"event": "token", "data": {"content": answer_text}}
+                                )
 
                     if kind == "on_chain_end" and event.get("name") in {
+                        "tool_planner",
+                        "run_tools",
+                        "build_context",
                         "retrieve_initial",
                         "retrieve_expanded",
                         "retrieve_summary",
@@ -324,7 +340,14 @@ async def chat_non_stream(req: SendMessageRequest):
         "messages": history,
         "question": req.content,
         "paper_id": req.paper_id,
+        "conversation_id": req.conversation_id,
         "route": None,
+        "tool_plan": {},
+        "tool_results": [],
+        "built_context": "",
+        "context_stats": {},
+        "research_results": [],
+        "notes": [],
         "context": [],
         "docs": [],
         "rag_trace": {},

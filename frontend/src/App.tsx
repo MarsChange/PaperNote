@@ -522,9 +522,12 @@ function App() {
         </div>
       </header>
 
-      <div className="min-h-0 flex-1">
-        <PanelGroup direction={isCompact ? 'vertical' : 'horizontal'}>
-          <Panel defaultSize={isCompact ? 58 : 62} minSize={30}>
+      <div className="min-h-0 flex-1 overflow-hidden">
+        <PanelGroup
+          direction={isCompact ? 'vertical' : 'horizontal'}
+          className="h-full min-h-0"
+        >
+          <Panel defaultSize={isCompact ? 58 : 62} minSize={30} className="min-h-0 overflow-hidden">
             <PDFViewer
               url={pdfUrl}
               annotations={annotations}
@@ -538,7 +541,7 @@ function App() {
             <div className={isCompact ? 'h-px w-16 rounded-full bg-border' : 'h-16 w-px rounded-full bg-border'} />
           </PanelResizeHandle>
 
-          <Panel defaultSize={isCompact ? 42 : 38} minSize={25}>
+          <Panel defaultSize={isCompact ? 42 : 38} minSize={25} className="min-h-0 overflow-hidden">
             <ChatSidebar
               file={file}
               messages={messages}

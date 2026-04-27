@@ -646,24 +646,52 @@ class VectorStore:
         except Exception:
             return None
 
+    def _agentic_paper_has_vectors(
+        self,
+        collection_name: str,
+        paper_id: str,
+    ) -> Optional[bool]:
+        if not collection_name or not self.client.has_collection(collection_name):
+            return False
+        try:
+            rows = self.client.query(
+                collection_name=collection_name,
+                filter=f'paper_id == "{paper_id}"',
+                output_fields=["id"],
+                limit=1,
+            )
+            return bool(rows)
+        except Exception as exc:
+            logger.warning(
+                "Could not verify agentic vectors for %s in %s: %s",
+                paper_id,
+                collection_name,
+                exc,
+            )
+            return None
+
     def _ensure_agentic_vectors_available(
         self,
         paper_id: str,
         manifest: dict[str, Any],
         collection_name: str,
     ) -> str:
-        row_count = self._agentic_collection_row_count(collection_name)
-        if row_count not in (0,):
+        paper_has_vectors = self._agentic_paper_has_vectors(collection_name, paper_id)
+        if paper_has_vectors is True:
             return collection_name
+        if paper_has_vectors is None:
+            row_count = self._agentic_collection_row_count(collection_name)
+            if row_count not in (0,):
+                return collection_name
 
         leaves = agentic_docstore.load_leaves(paper_id)
         if not leaves:
             return collection_name
 
         logger.warning(
-            "Agentic collection %s is empty for %s; rebuilding from local leaf chunks",
-            collection_name,
+            "Agentic vectors are missing for %s in %s; rebuilding from local leaf chunks",
             paper_id,
+            collection_name,
         )
         rebuilt_meta = self._index_agentic_chunks(paper_id, leaves)
         if not rebuilt_meta.get("indexed"):
@@ -1158,6 +1186,65 @@ class VectorStore:
             "dense_sparse_rrf": retrieval_mode == "hybrid",
         }
         return {"sources": sources, "docs": merged, "meta": meta}
+
+    def agentic_dense_only_retrieve(
+        self,
+        paper_id: str,
+        query: str,
+        top_k: int = 6,
+    ) -> dict[str, Any]:
+        manifest = self._load_manifest(paper_id)
+        agentic_meta = manifest.get("metadata", {}).get("agentic_rag", {})
+        collection_name = agentic_meta.get("collection")
+        retrieval_error = None
+        docs: list[dict[str, Any]] = []
+
+        if collection_name and self.can_embed():
+            collection_name = self._ensure_agentic_vectors_available(
+                paper_id,
+                manifest,
+                collection_name,
+            )
+            try:
+                docs = self._dense_retrieve_agentic(collection_name, paper_id, query, top_k)
+            except Exception as exc:
+                retrieval_error = str(exc)
+
+        sources = [
+            self._serialize_agentic_doc(paper_id, doc, index)
+            for index, doc in enumerate(docs[:top_k], 1)
+        ]
+        graph_context = knowledge_graph_indexer.context_for_blocks(
+            paper_id,
+            [source.get("block_id") or source["id"] for source in sources],
+        )
+        for source in sources:
+            source["graph_context"] = graph_context.get(
+                source.get("block_id") or source["id"],
+                "",
+            )
+
+        meta = {
+            "rerank_enabled": False,
+            "rerank_applied": False,
+            "rerank_model": "",
+            "rerank_endpoint": "",
+            "rerank_error": None,
+            "candidate_count": len(docs),
+            "auto_merge_enabled": False,
+            "auto_merge_applied": False,
+            "auto_merge_threshold": 0,
+            "auto_merge_replaced_chunks": 0,
+            "auto_merge_steps": 0,
+            "retrieval_mode": "dense_only",
+            "retrieval_error": retrieval_error,
+            "candidate_k": top_k,
+            "leaf_retrieve_level": settings.leaf_retrieve_level,
+            "source": "agentic_dense_only_baseline",
+            "hybrid_search": False,
+            "dense_sparse_rrf": False,
+        }
+        return {"sources": sources, "docs": docs[:top_k], "meta": meta}
 
     def _serialize_agentic_doc(
         self,

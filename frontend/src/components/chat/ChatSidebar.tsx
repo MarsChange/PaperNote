@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useLayoutEffect, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
@@ -80,6 +80,44 @@ function RagSteps({ steps }: { steps: RagStep[] }) {
   )
 }
 
+function ReferenceBlocks({
+  sources,
+  onGoToPage,
+}: {
+  sources: PaperSource[]
+  onGoToPage: (pageNumber: number) => void
+}) {
+  if (!sources.length) return null
+
+  return (
+    <details className="group rounded-[20px] border border-border bg-surface px-3 py-3">
+      <summary className="flex cursor-pointer list-none items-center justify-between gap-3 text-left">
+        <div>
+          <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-text-tertiary">
+            RAG References
+          </div>
+          <div className="mt-1 text-sm font-medium text-text-primary">
+            参考文本块（{sources.length}）
+          </div>
+        </div>
+        <span className="shrink-0 rounded-full bg-surface-secondary px-2.5 py-1 text-xs text-text-secondary">
+          点击展开/收起
+        </span>
+      </summary>
+
+      <div className="mt-3 grid gap-2 border-t border-border pt-3">
+        {sources.map((source) => (
+          <SourceCard
+            key={source.id}
+            source={source}
+            onGoToPage={onGoToPage}
+          />
+        ))}
+      </div>
+    </details>
+  )
+}
+
 export default function ChatSidebar({
   file,
   messages,
@@ -92,10 +130,20 @@ export default function ChatSidebar({
 }: ChatSidebarProps) {
   const [input, setInput] = useState('')
   const [activeTab, setActiveTab] = useState<Tab>('chat')
-  const messagesEndRef = useRef<HTMLDivElement>(null)
+  const messagesScrollerRef = useRef<HTMLDivElement>(null)
+  const previousMessageCountRef = useRef(0)
 
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+  useLayoutEffect(() => {
+    const scroller = messagesScrollerRef.current
+    if (!scroller) return
+
+    const previousCount = previousMessageCountRef.current
+    previousMessageCountRef.current = messages.length
+    const behavior: ScrollBehavior = messages.length > previousCount ? 'smooth' : 'auto'
+    const frame = requestAnimationFrame(() => {
+      scroller.scrollTo({ top: scroller.scrollHeight, behavior })
+    })
+    return () => cancelAnimationFrame(frame)
   }, [messages])
 
   const submitInput = () => {
@@ -112,8 +160,8 @@ export default function ChatSidebar({
   }
 
   return (
-    <div className="h-full rounded-[28px] border border-border bg-surface shadow-[0_12px_40px_rgba(36,30,20,0.08)]">
-      <div className="flex h-full flex-col overflow-hidden rounded-[28px]">
+    <div className="min-h-0 h-full rounded-[28px] border border-border bg-surface shadow-[0_12px_40px_rgba(36,30,20,0.08)]">
+      <div className="flex h-full min-h-0 flex-col overflow-hidden rounded-[28px]">
         <div className="border-b border-border bg-[rgba(255,252,245,0.92)] px-4 py-4 backdrop-blur">
           <h2 className="text-lg font-semibold text-text-primary">
             论文问答与阅读笔记
@@ -151,7 +199,10 @@ export default function ChatSidebar({
           />
         ) : (
           <>
-            <div className="flex-1 overflow-y-auto px-4 py-4">
+            <div
+              ref={messagesScrollerRef}
+              className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-4"
+            >
               {file.status === 'parsing' || file.status === 'indexing' ? (
                 <div className="mb-4 flex items-center gap-2 rounded-[20px] bg-surface-secondary px-4 py-3 text-sm text-text-secondary">
                   <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-accent border-t-transparent" />
@@ -211,22 +262,16 @@ export default function ChatSidebar({
                         <RagSteps steps={msg.ragSteps} />
                       )}
 
-                      {msg.role === 'assistant' && msg.sources && msg.sources.length > 0 && (
-                        <div className="grid gap-2">
-                          {msg.sources.map((source) => (
-                            <SourceCard
-                              key={source.id}
-                              source={source}
-                              onGoToPage={onGoToPage}
-                            />
-                          ))}
-                        </div>
-                      )}
+                      {msg.role === 'assistant' && msg.sources && msg.sources.length > 0 ? (
+                        <ReferenceBlocks
+                          sources={msg.sources}
+                          onGoToPage={onGoToPage}
+                        />
+                      ) : null}
                     </div>
                   </div>
                 ))}
               </div>
-              <div ref={messagesEndRef} />
             </div>
 
             <div className="border-t border-border bg-[rgba(255,252,245,0.92)] px-4 py-4 backdrop-blur">

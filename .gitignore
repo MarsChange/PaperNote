@@ -38,5 +38,6 @@ backend/**/__pycache__/
 # Data files
 backend/data
 backend/app/data
+experiments/artifacts/
 
 docs
